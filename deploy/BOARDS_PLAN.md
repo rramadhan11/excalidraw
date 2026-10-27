@@ -69,18 +69,24 @@ Ke depan mungkin perlu share board ke user lain. Untuk sekarang cukup didesain s
 - migrasi SQL yang di-embed (`embed` + `goose`)
 - tanpa framework
 
-**Skema** (`migrations/0001_init.sql`)
+**Skema** (`excalidraw-server/internal/db/migrations/00001_init.sql`)
 ```sql
-users       (id uuid pk, email citext unique, name text, password_hash text, created_at)
-sessions    (token_hash bytea pk, user_id fk on delete cascade, expires_at, created_at)  -- index (user_id)
+users       (id uuid pk, email text unique check(lowercase), name text, password_hash text, created_at)
+sessions    (token_hash bytea pk, user_id fk on delete cascade, expires_at, created_at)  -- index (user_id), (expires_at)
 boards      (id uuid pk, owner_id fk on delete cascade, name text not null,
-             scene jsonb not null, version bigint not null default 1,
+             scene json not null, version bigint not null default 1,
              created_at, updated_at)                                            -- index (owner_id, updated_at desc)
 board_files (board_id fk on delete cascade, file_id text, mime_type text,
-             data bytea, created_at, primary key (board_id, file_id))
+             data_url text, file_created bigint, version int, updated_at,
+             primary key (board_id, file_id))
 ```
 - `scene` berisi `{elements, appState}`. appState sudah dibersihkan dengan `clearAppStateForDatabase` di sisi client, sama seperti cara share link menyimpan data.
-- Gambar disimpan sebagai `bytea` di Postgres, bukan di disk. Dengan begitu backup cukup satu `pg_dump`. Skala keluarga/teman masih aman di sini. Batas ukuran per file 4 MB, sesuai `MAX_ALLOWED_FILE_BYTES` di common.
+- **Penyesuaian saat implementasi:**
+  - `scene` memakai tipe `json`, bukan `jsonb`. `jsonb` menolak escape `\u0000` (save board bisa gagal permanen) dan mengurutkan ulang key. Isi scene tidak pernah di-query, jadi `jsonb` tidak memberi manfaat apa pun.
+  - Email disimpan dalam lowercase dengan CHECK, bukan `citext`, supaya tidak perlu extension Postgres.
+- Gambar disimpan di Postgres, bukan di disk, sehingga backup cukup satu `pg_dump`. Skala keluarga/teman masih aman di sini. Batas ukuran per file 4 MiB, sesuai `FILE_UPLOAD_MAX_BYTES` di `excalidraw-app/app_constants.ts`.
+  - **Penyesuaian:** gambar disimpan sebagai `data_url text` apa adanya, bukan di-decode ke `bytea`. Client mendapat kembali data yang persis sama, termasuk data URL non-base64 seperti SVG. Biayanya sekitar 33% overhead base64.
+  - **Penyesuaian:** `BinaryFileData` punya field `version` (`packages/excalidraw/types.ts:145`), jadi file tidak sepenuhnya immutable. Upload memakai upsert: file yang tersimpan hanya diganti kalau `version` yang dikirim lebih baru. Re-upload versi yang sama tidak mengubah apa pun, jadi tetap aman di-retry.
 - Persiapan fitur sharing: semua akses board lewat satu fungsi `authorizeBoard(ctx, userID, boardID, perm)`. Untuk sekarang isinya cek `owner_id`. Nanti cukup tambah tabel `board_members`, tanpa mengubah handler.
 
 **Auth**
@@ -102,7 +108,7 @@ board_files (board_id fk on delete cascade, file_id text, mime_type text,
 | `PUT /api/boards/{id}/scene` | body `{version, scene}` |
 | `PATCH /api/boards/{id}` | `{name}` (rename) |
 | `DELETE /api/boards/{id}` | hapus board, file ikut terhapus lewat cascade |
-| `PUT /api/boards/{id}/files/{fileId}` | `{mimeType, dataURL}` → decode lalu simpan. `ON CONFLICT DO NOTHING` karena file excalidraw immutable per id, jadi aman di-retry |
+| `PUT /api/boards/{id}/files/{fileId}` | `{mimeType, dataURL, created, version?}` → disimpan apa adanya. Hanya `version` yang lebih baru yang menimpa file lama, jadi aman di-retry |
 | `GET /api/boards/{id}/files?ids=a,b,c` | kembalikan `{files: [...BinaryFileData]}` dan `erroredIds` |
 
 Detail `PUT /scene`:
@@ -182,7 +188,7 @@ Board mode aktif bila `import.meta.env.VITE_APP_BOARDS_API` di-set (contoh `/api
 ## First-Principles Audit
 | Approach | Pros | Cons | Verdict |
 |---|---|---|---|
-| **A. Go API + Postgres (scene jsonb, file bytea), board mode opt-in di excalidraw-app** | Sesuai stack user. Satu sumber data dan satu backup. Reuse `FileManager`/restore. Core library tidak disentuh | Perlu menulis auth sendiri dan merawat fork `App.tsx` | **Chosen** |
+| **A. Go API + Postgres (scene json, file data URL di Postgres), board mode opt-in di excalidraw-app** | Sesuai stack user. Satu sumber data dan satu backup. Reuse `FileManager`/restore. Core library tidak disentuh | Perlu menulis auth sendiri dan merawat fork `App.tsx` | **Chosen** |
 | B. Implement ulang protokol share-link `#json` (`VITE_APP_BACKEND_V2_*`) di Go, frontend tidak diubah | Hampir tanpa perubahan frontend | Tidak ada konsep user, list board, rename, atau autosave. Tiap perubahan menghasilkan link baru. Tidak memenuhi requirement | Rejected |
 | C. Simpan gambar di disk (volume) atau MinIO, bukan bytea | DB lebih kecil, streaming lebih efisien | Dua sistem yang harus di-backup dan disinkronkan. Rawan orphan file atau konsistensi hilang saat restore. Belum ada kebutuhan skala ke arah sana | Rejected untuk sekarang. Bisa dimigrasi nanti di balik interface `FileStore` di Go |
 | D. Pakai proyek OSS pihak ketiga (mis. excalidraw-storage-backend) | Lebih cepat | Bukan Go. Model data per-room tanpa akun. Kode tidak dikuasai | Rejected |
@@ -226,7 +232,7 @@ Kenapa A: requirement intinya adalah *kepemilikan per user* dan *banyak board*. 
   - login sukses/gagal, akses tanpa cookie → 401, request tanpa header CSRF → 403
   - user B mengakses board user A → 404 di semua endpoint (GET, PUT, PATCH, DELETE, files)
   - `PUT /scene` dengan versi lama → 409, versi benar → `version+1`
-  - upload file yang sama dua kali tetap idempotent, file >4 MB → 413, delete board ikut menghapus file (cascade)
+  - upload ulang versi yang sama tidak mengubah data, versi lebih baru menimpa, file >4 MiB → 413, delete board ikut menghapus file (cascade)
 - **Frontend (vitest)** `excalidraw-app/tests/boards.test.tsx` dengan `fetch` di-mock:
   - board di-load dari API dan dirender
   - perubahan elemen memicu satu `PUT` setelah debounce, tanpa `PUT` kalau tidak ada perubahan
