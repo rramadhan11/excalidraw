@@ -95,6 +95,7 @@ import {
   SYNC_BROWSER_TABS_TIMEOUT,
 } from "./app_constants";
 import { BoardsAuthGate } from "./boards/BoardsAuthGate";
+import { BoardsRouter } from "./boards/BoardsRouter";
 import { BoardStorage } from "./boards/BoardStorage";
 import { SaveStatus } from "./boards/SaveStatus";
 import { useBoardsMode } from "./boards/useBoardsMode";
@@ -1364,7 +1365,7 @@ const ExcalidrawApp = () => {
         <ExcalidrawAPIProvider>
           {isBoardsMode() ? (
             <BoardsAuthGate>
-              <ExcalidrawWrapper />
+              <BoardsRouter editor={<ExcalidrawWrapper />} />
             </BoardsAuthGate>
           ) : (
             <ExcalidrawWrapper />

@@ -13,121 +13,29 @@ import { vi } from "vitest";
 import ExcalidrawApp from "../App";
 import { appJotaiStore } from "../app-jotai";
 import { BoardStorage } from "../boards/BoardStorage";
-import { authStateAtom, boardRouteAtom, saveStatusAtom } from "../boards/state";
+import { navigate } from "../boards/routes";
+import {
+  authStateAtom,
+  dashboardNoticeAtom,
+  routeAtom,
+  saveStatusAtom,
+} from "../boards/state";
+
+import {
+  BOARD_ID,
+  FakeBoardsServer,
+  WORKSPACE_ID,
+} from "./helpers/fakeBoardsServer";
+
+vi.mock("../boards/thumbnail", () => ({
+  renderThumbnail: vi.fn(
+    async () => new Blob(["jpeg"], { type: "image/jpeg" }),
+  ),
+}));
 
 const { h } = window;
 
-type FakeBoard = {
-  id: string;
-  name: string;
-  version: number;
-  scene: { elements: any[]; appState: Record<string, unknown> };
-  createdAt: string;
-  updatedAt: string;
-};
-
-const BOARD_ID = "11111111-1111-4111-8111-111111111111";
-
-/** In-memory stand-in for excalidraw-server, served through `fetch`. */
-class FakeServer {
-  loggedIn = true;
-  boards = new Map<string, FakeBoard>();
-  sceneSaves: { boardId: string; version: number; scene: any }[] = [];
-  conflictOnNextSave = false;
-
-  addBoard(board: Partial<FakeBoard> & { id: string }) {
-    this.boards.set(board.id, {
-      name: "Untitled",
-      version: 1,
-      scene: { elements: [], appState: {} },
-      createdAt: new Date(0).toISOString(),
-      updatedAt: new Date(0).toISOString(),
-      ...board,
-    });
-  }
-
-  fetch = async (input: RequestInfo | URL, init: RequestInit = {}) => {
-    const url = new URL(String(input), "http://localhost");
-    const method = init.method ?? "GET";
-    const body = init.body ? JSON.parse(String(init.body)) : undefined;
-    const json = (status: number, payload?: unknown) =>
-      new Response(payload === undefined ? null : JSON.stringify(payload), {
-        status,
-        headers: { "Content-Type": "application/json" },
-      });
-
-    if (!url.pathname.startsWith("/api/")) {
-      return json(404);
-    }
-    if (
-      method !== "GET" &&
-      (init.headers as any)?.["X-Requested-With"] !== "excalidraw"
-    ) {
-      return json(403, { error: { code: "csrf", message: "csrf" } });
-    }
-    const path = url.pathname.slice("/api".length);
-
-    if (path === "/auth/login" && method === "POST") {
-      this.loggedIn = true;
-      return json(200, { user: { id: "u1", email: body.email, name: "Me" } });
-    }
-    if (!this.loggedIn) {
-      return json(401, {
-        error: { code: "unauthorized", message: "login required" },
-      });
-    }
-    if (path === "/auth/me") {
-      return json(200, {
-        user: { id: "u1", email: "me@example.com", name: "Me" },
-      });
-    }
-    if (path === "/boards" && method === "GET") {
-      return json(200, { boards: [...this.boards.values()].reverse() });
-    }
-    if (path === "/boards" && method === "POST") {
-      const id = "22222222-2222-4222-8222-222222222222";
-      this.addBoard({ id });
-      return json(201, this.boards.get(id));
-    }
-
-    const match = path.match(/^\/boards\/([^/]+)(\/scene|\/files.*)?$/);
-    const board = match && this.boards.get(match[1]);
-    if (!board) {
-      return json(404, {
-        error: { code: "not_found", message: "board not found" },
-      });
-    }
-    if (!match[2] && method === "GET") {
-      return json(200, board);
-    }
-    if (match[2] === "/scene" && method === "PUT") {
-      if (this.conflictOnNextSave || body.version !== board.version) {
-        this.conflictOnNextSave = false;
-        return json(409, {
-          error: { code: "conflict", message: "board was modified elsewhere" },
-          version: board.version + 1,
-        });
-      }
-      board.version += 1;
-      board.scene = body.scene;
-      this.sceneSaves.push({
-        boardId: board.id,
-        version: body.version,
-        scene: body.scene,
-      });
-      return json(200, {
-        version: board.version,
-        updatedAt: new Date().toISOString(),
-      });
-    }
-    if (match[2]?.startsWith("/files") && method === "GET") {
-      return json(200, { files: [], erroredIds: [] });
-    }
-    return json(404, { error: { code: "not_found", message: "no route" } });
-  };
-}
-
-let server: FakeServer;
+let server: FakeBoardsServer;
 
 const addRectangle = (id: string) => {
   const rectangle = API.createElement({ type: "rectangle", id, x: 0, y: 0 });
@@ -140,7 +48,25 @@ const addRectangle = (id: string) => {
   return rectangle;
 };
 
-describe("boards mode", () => {
+const openBoard = async (boardId = BOARD_ID) => {
+  window.history.replaceState(null, "", `/board/${boardId}`);
+  await render(<ExcalidrawApp />);
+  await waitFor(() => {
+    expect(appJotaiStore.get(saveStatusAtom)).toBe("saved");
+  });
+};
+
+const logIn = () => {
+  fireEvent.change(screen.getByLabelText("Email"), {
+    target: { value: "me@example.com" },
+  });
+  fireEvent.change(screen.getByLabelText("Password"), {
+    target: { value: "secret password" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Log in" }));
+};
+
+describe("boards mode: editor", () => {
   beforeAll(() => {
     vi.stubEnv("VITE_APP_BOARDS_API", "/api");
   });
@@ -150,42 +76,34 @@ describe("boards mode", () => {
   });
 
   beforeEach(() => {
-    server = new FakeServer();
+    server = new FakeBoardsServer();
     vi.stubGlobal("fetch", server.fetch);
     BoardStorage.close();
     appJotaiStore.set(authStateAtom, { status: "loading" });
-    appJotaiStore.set(boardRouteAtom, undefined);
+    appJotaiStore.set(routeAtom, undefined);
+    appJotaiStore.set(dashboardNoticeAtom, null);
     window.history.replaceState(null, "", "/");
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
   });
 
-  it("shows the login screen without a session, then opens the editor", async () => {
+  it("shows the login screen without a session, then the dashboard", async () => {
     server.loggedIn = false;
     server.addBoard({ id: BOARD_ID, name: "Plans" });
 
-    const { container } = renderDOM(<ExcalidrawApp />);
+    renderDOM(<ExcalidrawApp />);
 
     await screen.findByText("Log in to open your boards.");
-    expect(container.querySelector("canvas.static")).toBeNull();
+    logIn();
 
-    fireEvent.change(screen.getByLabelText("Email"), {
-      target: { value: "me@example.com" },
-    });
-    fireEvent.change(screen.getByLabelText("Password"), {
-      target: { value: "secret password" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Log in" }));
-
-    await waitFor(() => {
-      expect(container.querySelector("canvas.static")).not.toBeNull();
-      expect(window.location.pathname).toBe(`/board/${BOARD_ID}`);
-    });
+    await screen.findByRole("button", { name: "Open Plans" });
+    expect(window.location.pathname).toBe(`/w/${WORKSPACE_ID}`);
   });
 
-  it("opens the latest board on / and autosaves only real changes", async () => {
+  it("opens a board and autosaves only real changes", async () => {
     server.addBoard({
       id: BOARD_ID,
       name: "Plans",
@@ -195,12 +113,9 @@ describe("boards mode", () => {
       },
     });
 
-    await render(<ExcalidrawApp />);
+    await openBoard();
 
-    await waitFor(() => {
-      expect(window.location.pathname).toBe(`/board/${BOARD_ID}`);
-      expect(h.elements.map((el) => el.id)).toEqual(["existing"]);
-    });
+    expect(h.elements.map((el) => el.id)).toEqual(["existing"]);
     expect(h.state.viewBackgroundColor).toBe("#fafafa");
     expect(h.state.name).toBe("Plans");
 
@@ -219,7 +134,6 @@ describe("boards mode", () => {
     expect(server.sceneSaves[0].scene.appState.viewBackgroundColor).toBe(
       "#fafafa",
     );
-    expect(appJotaiStore.get(saveStatusAtom)).toBe("saved");
 
     // selection changes are not persisted, so they don't trigger a save
     act(() => {
@@ -229,34 +143,89 @@ describe("boards mode", () => {
     expect(server.sceneSaves).toHaveLength(1);
   });
 
-  it("stops autosaving after a conflict instead of overwriting", async () => {
+  it("uploads a thumbnail after saving and removes it when the board is emptied", async () => {
     server.addBoard({ id: BOARD_ID });
-    window.history.replaceState(null, "", `/board/${BOARD_ID}`);
+    await openBoard();
 
-    await render(<ExcalidrawApp />);
-    await waitFor(() => {
-      expect(appJotaiStore.get(saveStatusAtom)).toBe("saved");
+    addRectangle("a");
+    await act(() => BoardStorage.flushAndWait());
+    expect(server.thumbnailPuts).toEqual([
+      { boardId: BOARD_ID, type: "image/jpeg" },
+    ]);
+
+    act(() => {
+      API.updateScene({
+        elements: [],
+        captureUpdate: CaptureUpdateAction.IMMEDIATELY,
+      });
     });
+    await act(() => BoardStorage.flushAndWait());
+    expect(server.thumbnailDeletes).toEqual([BOARD_ID]);
+  });
+
+  it("gives boards from before thumbnails existed one when opened", async () => {
+    server.addBoard({
+      id: BOARD_ID,
+      scene: {
+        elements: [API.createElement({ type: "ellipse", id: "old" })],
+        appState: {},
+      },
+    });
+    await openBoard();
+    await act(() => BoardStorage.flushThumbnail());
+    expect(server.thumbnailPuts).toHaveLength(1);
+    expect(server.sceneSaves).toHaveLength(0);
+  });
+
+  it("saves pending changes before leaving the editor for the dashboard", async () => {
+    server.addBoard({ id: BOARD_ID });
+    await openBoard();
+
+    addRectangle("unsaved");
+    // no flush: leaving must save it
+    await act(() =>
+      navigate({
+        page: "dashboard",
+        workspaceId: WORKSPACE_ID,
+        collection: null,
+      }),
+    );
+
+    expect(server.sceneSaves).toHaveLength(1);
+    expect(server.sceneSaves[0].scene.elements[0].id).toBe("unsaved");
+    await screen.findByRole("heading", { name: "All boards" });
+  });
+
+  it("stops autosaving after a conflict and asks before leaving", async () => {
+    server.addBoard({ id: BOARD_ID });
+    await openBoard();
 
     server.conflictOnNextSave = true;
     addRectangle("first");
     await act(() => BoardStorage.flushAndWait());
     expect(appJotaiStore.get(saveStatusAtom)).toBe("conflict");
-    expect(BoardStorage.hasUnsavedChanges()).toBe(true);
 
     addRectangle("second");
     await act(() => BoardStorage.flushAndWait());
     expect(server.sceneSaves).toHaveLength(0);
+
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    let left = true;
+    await act(async () => {
+      left = await navigate({
+        page: "dashboard",
+        workspaceId: WORKSPACE_ID,
+        collection: null,
+      });
+    });
+    expect(confirm).toHaveBeenCalled();
+    expect(left).toBe(false);
+    expect(window.location.pathname).toBe(`/board/${BOARD_ID}`);
   });
 
   it("keeps edits and asks to log in again when the session expires", async () => {
     server.addBoard({ id: BOARD_ID });
-    window.history.replaceState(null, "", `/board/${BOARD_ID}`);
-
-    await render(<ExcalidrawApp />);
-    await waitFor(() => {
-      expect(appJotaiStore.get(saveStatusAtom)).toBe("saved");
-    });
+    await openBoard();
 
     server.loggedIn = false;
     addRectangle("offline-edit");
@@ -266,13 +235,7 @@ describe("boards mode", () => {
     await screen.findByText("Session expired");
     expect(h.elements.map((el) => el.id)).toEqual(["offline-edit"]);
 
-    fireEvent.change(screen.getByLabelText("Email"), {
-      target: { value: "me@example.com" },
-    });
-    fireEvent.change(screen.getByLabelText("Password"), {
-      target: { value: "secret password" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Log in" }));
+    logIn();
 
     await waitFor(() => {
       expect(server.sceneSaves).toHaveLength(1);
@@ -280,18 +243,16 @@ describe("boards mode", () => {
     expect(server.sceneSaves[0].scene.elements[0].id).toBe("offline-edit");
   });
 
-  it("redirects an unknown board id to the default board", async () => {
-    server.addBoard({ id: BOARD_ID });
+  it("sends an unknown board id to the dashboard with a notice", async () => {
     window.history.replaceState(
       null,
       "",
       "/board/99999999-9999-4999-8999-999999999999",
     );
 
-    await render(<ExcalidrawApp />);
+    renderDOM(<ExcalidrawApp />);
 
-    await waitFor(() => {
-      expect(window.location.pathname).toBe(`/board/${BOARD_ID}`);
-    });
+    await screen.findByText(/That board doesn't exist/);
+    expect(window.location.pathname).toBe(`/w/${WORKSPACE_ID}`);
   });
 });

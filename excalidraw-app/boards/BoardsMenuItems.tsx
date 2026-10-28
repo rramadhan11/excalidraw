@@ -1,23 +1,43 @@
 import { DEFAULT_SIDEBAR } from "@excalidraw/common";
 import { useExcalidrawAPI } from "@excalidraw/excalidraw";
-import { LoadIcon, loginIcon } from "@excalidraw/excalidraw/components/icons";
+import {
+  gridIcon,
+  LoadIcon,
+  loginIcon,
+} from "@excalidraw/excalidraw/components/icons";
 import { MainMenu } from "@excalidraw/excalidraw/index";
 
 import { useAtomValue } from "../app-jotai";
 
 import { boardsApi } from "./api";
 import { BoardStorage } from "./BoardStorage";
+import { navigate } from "./routes";
 import { BOARDS_SIDEBAR_TAB } from "./SaveStatus";
-import { authStateAtom } from "./state";
+import { authStateAtom, currentBoardAtom } from "./state";
 
 /** Main menu entries replacing the Excalidraw+ links in boards mode. */
 export const BoardsMenuItems = () => {
   const excalidrawAPI = useExcalidrawAPI();
   const auth = useAtomValue(authStateAtom);
   const user = auth.status === "authenticated" ? auth.user : null;
+  const currentBoard = useAtomValue(currentBoardAtom);
 
   return (
     <>
+      {currentBoard && (
+        <MainMenu.Item
+          icon={gridIcon}
+          onSelect={() =>
+            navigate({
+              page: "dashboard",
+              workspaceId: currentBoard.workspaceId,
+              collection: currentBoard.collectionId,
+            })
+          }
+        >
+          Dashboard
+        </MainMenu.Item>
+      )}
       <MainMenu.Item
         icon={LoadIcon}
         onSelect={() =>

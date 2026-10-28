@@ -1,6 +1,6 @@
 import { atom } from "../app-jotai";
 
-import type { BoardSummary, BoardUser } from "./api";
+import type { BoardSummary, BoardUser, CollectionFilter } from "./api";
 
 export type AuthState =
   | { status: "loading" }
@@ -31,9 +31,23 @@ export const saveStatusAtom = atom<SaveStatus>("idle");
 
 export const currentBoardAtom = atom<BoardSummary | null>(null);
 
-/** board id from the URL (`/board/:id`), null on `/`, undefined until the
- * URL has been read */
-export const boardRouteAtom = atom<string | null | undefined>(undefined);
+export type Route =
+  /** `/`: resolves to the last used workspace */
+  | { page: "home" }
+  /** `/w/:workspaceId?collection=<id|unsorted>` */
+  | {
+      page: "dashboard";
+      workspaceId: string;
+      collection: CollectionFilter;
+    }
+  /** `/board/:boardId` */
+  | { page: "board"; boardId: string };
+
+/** the current page; undefined until the URL has been read */
+export const routeAtom = atom<Route | undefined>(undefined);
 
 /** bumped to make the boards list refetch (after create/rename/delete/save) */
 export const boardsListVersionAtom = atom(0);
+
+/** a one-off message for the dashboard (e.g. why the user was sent there) */
+export const dashboardNoticeAtom = atom<string | null>(null);

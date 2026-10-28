@@ -1,0 +1,641 @@
+// The dashboard renders outside `.excalidraw`, so it carries its own tokens,
+// following the editor's theme via [data-theme].
+.boards-dashboard {
+  --db-bg: #f6f6f9;
+  --db-sidebar: #ffffff;
+  --db-surface: #ffffff;
+  --db-surface-hover: #f1f0ff;
+  --db-border: #e2e2ea;
+  --db-text: #1b1b1f;
+  --db-muted: #6b6b76;
+  --db-primary: #6965db;
+  --db-primary-hover: #5753d0;
+  --db-primary-soft: #e3e2fe;
+  --db-on-primary: #ffffff;
+  --db-danger: #c22b25;
+  --db-danger-soft: #fff0f0;
+  --db-shadow: 0 1px 3px rgba(0, 0, 0, 0.08), 0 4px 16px rgba(0, 0, 0, 0.06);
+  // thumbnails are rendered light; dark mode inverts them like the canvas
+  --db-thumbnail-filter: none;
+
+  position: fixed;
+  inset: 0;
+  display: flex;
+  background: var(--db-bg);
+  color: var(--db-text);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 0.875rem;
+  overflow: hidden;
+
+  &[data-theme="dark"] {
+    --db-bg: #18181c;
+    --db-sidebar: #202026;
+    --db-surface: #232329;
+    --db-surface-hover: #2e2d39;
+    --db-border: #34343e;
+    --db-text: #e3e3e8;
+    --db-muted: #a0a0ab;
+    --db-primary: #a8a5ff;
+    --db-primary-hover: #bbb8ff;
+    --db-primary-soft: #2e2d4d;
+    --db-on-primary: #1b1b1f;
+    --db-danger: #ff8a80;
+    --db-danger-soft: #3b1f1f;
+    --db-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+    --db-thumbnail-filter: invert(93%) hue-rotate(180deg);
+  }
+
+  svg {
+    width: 1rem;
+    height: 1rem;
+    flex: 0 0 auto;
+  }
+
+  button {
+    font: inherit;
+    color: inherit;
+    cursor: pointer;
+  }
+
+  button:disabled {
+    cursor: default;
+    opacity: 0.6;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--db-primary);
+    outline-offset: 1px;
+  }
+
+  h1,
+  h2 {
+    margin: 0;
+  }
+
+  &--centered {
+    align-items: center;
+    justify-content: center;
+    padding: 1rem;
+  }
+
+  &__empty-card {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    width: 100%;
+    max-width: 22rem;
+    padding: 1.75rem;
+    border-radius: 0.75rem;
+    background: var(--db-surface);
+    box-shadow: var(--db-shadow);
+
+    p {
+      margin: 0;
+      color: var(--db-muted);
+    }
+  }
+
+  // --- sidebar ---------------------------------------------------------------
+
+  &__sidebar {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    width: 16rem;
+    flex: 0 0 auto;
+    padding: 0.75rem;
+    border-right: 1px solid var(--db-border);
+    background: var(--db-sidebar);
+    overflow-y: auto;
+  }
+
+  &__user {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: auto;
+    padding: 0.5rem;
+    border-top: 1px solid var(--db-border);
+  }
+
+  &__user-name {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    font-weight: 600;
+  }
+
+  &__icon-button {
+    display: inline-flex;
+    padding: 0.375rem;
+    border: 1px solid var(--db-border);
+    border-radius: 0.5rem;
+    background: transparent;
+
+    &:hover {
+      background: var(--db-surface-hover);
+    }
+  }
+
+  // --- main ------------------------------------------------------------------
+
+  &__main {
+    flex: 1 1 auto;
+    min-width: 0;
+    padding: 1.5rem 2rem 3rem;
+    overflow-y: auto;
+  }
+
+  &__header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-bottom: 1.25rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--db-border);
+
+    h1 {
+      min-width: 0;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+      font-size: 1.5rem;
+    }
+  }
+
+  &__section {
+    margin-bottom: 2rem;
+
+    h2 {
+      margin-bottom: 0.75rem;
+      font-size: 1.0625rem;
+      color: var(--db-primary);
+    }
+  }
+
+  &__primary,
+  &__secondary,
+  &__danger {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    padding: 0.5rem 0.875rem;
+    border-radius: 0.5rem;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+
+  &__primary {
+    border: 0;
+    background: var(--db-primary);
+    color: var(--db-on-primary) !important;
+
+    &:hover {
+      background: var(--db-primary-hover);
+    }
+  }
+
+  &__secondary {
+    border: 1px solid var(--db-border);
+    background: var(--db-surface);
+
+    &:hover {
+      background: var(--db-surface-hover);
+    }
+  }
+
+  &__danger {
+    border: 0;
+    background: var(--db-danger);
+    color: #fff !important;
+  }
+
+  &__more {
+    display: flex;
+    margin: 0 auto;
+  }
+
+  &__banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-bottom: 1rem;
+    padding: 0.625rem 0.875rem;
+    border-radius: 0.5rem;
+    background: var(--db-primary-soft);
+
+    &--error {
+      background: var(--db-danger-soft);
+      color: var(--db-danger);
+    }
+
+    button {
+      flex: 0 0 auto;
+      border: 0;
+      background: transparent;
+      font-weight: 600;
+      text-decoration: underline;
+    }
+  }
+
+  &__muted {
+    color: var(--db-muted);
+  }
+
+  &__error-text {
+    color: var(--db-danger) !important;
+  }
+
+  &__empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 3rem 1rem;
+    color: var(--db-muted);
+    text-align: center;
+  }
+
+  &__input {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 0.4375rem 0.625rem;
+    border: 1px solid var(--db-primary);
+    border-radius: 0.5rem;
+    background: var(--db-surface);
+    color: inherit;
+    font: inherit;
+  }
+
+  // phones: sidebar on top
+  @media (max-width: 720px) {
+    flex-direction: column;
+    overflow-y: auto;
+
+    &__sidebar {
+      width: auto;
+      border-right: 0;
+      border-bottom: 1px solid var(--db-border);
+      overflow: visible;
+    }
+
+    &__user {
+      margin-top: 0;
+    }
+
+    &__main {
+      overflow: visible;
+      padding: 1rem;
+    }
+  }
+}
+
+// --- popovers ----------------------------------------------------------------
+
+.boards-popover {
+  position: absolute;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  min-width: 13rem;
+  max-width: 18rem;
+  max-height: 20rem;
+  padding: 0.375rem;
+  border: 1px solid var(--db-border);
+  border-radius: 0.625rem;
+  background: var(--db-surface);
+  box-shadow: var(--db-shadow);
+  overflow-y: auto;
+
+  &__label {
+    padding: 0.375rem 0.5rem;
+    color: var(--db-muted);
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+  }
+
+  &__item {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem;
+    border: 0;
+    border-radius: 0.375rem;
+    background: transparent;
+    text-align: left;
+
+    &:hover:not(:disabled) {
+      background: var(--db-surface-hover);
+    }
+
+    &--danger {
+      color: var(--db-danger) !important;
+    }
+  }
+
+  &__text {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  &__separator {
+    height: 1px;
+    margin: 0.25rem 0;
+    background: var(--db-border);
+  }
+
+  &__confirm {
+    padding: 0.375rem;
+
+    p {
+      margin: 0 0 0.75rem;
+    }
+  }
+
+  &__actions {
+    display: flex;
+    gap: 0.5rem;
+
+    button:not(.boards-dashboard__danger) {
+      padding: 0.5rem 0.75rem;
+      border: 1px solid var(--db-border);
+      border-radius: 0.5rem;
+      background: transparent;
+    }
+  }
+}
+
+// --- workspace switcher ------------------------------------------------------
+
+.boards-ws {
+  position: relative;
+
+  &__current {
+    display: flex;
+    align-items: center;
+    gap: 0.625rem;
+    width: 100%;
+    padding: 0.5rem;
+    border: 1px solid var(--db-border);
+    border-radius: 0.625rem;
+    background: transparent;
+    text-align: left;
+
+    &:hover {
+      background: var(--db-surface-hover);
+    }
+  }
+
+  &__avatar {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2rem;
+    height: 2rem;
+    flex: 0 0 auto;
+    border-radius: 50%;
+    background: var(--db-primary);
+    color: var(--db-on-primary);
+    font-weight: 700;
+  }
+
+  &__name {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    font-weight: 700;
+  }
+
+  &__menu {
+    top: calc(100% + 0.25rem);
+    left: 0;
+    right: 0;
+    max-width: none;
+  }
+}
+
+// --- navigation --------------------------------------------------------------
+
+.boards-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+
+  &__list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.125rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  &__header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 0.75rem;
+    padding: 0 0.5rem;
+
+    h2 {
+      font-size: 0.9375rem;
+      color: var(--db-primary);
+    }
+  }
+
+  &__add {
+    display: inline-flex;
+    padding: 0.25rem;
+    border: 0;
+    border-radius: 0.375rem;
+    background: var(--db-primary-soft);
+    color: var(--db-primary) !important;
+  }
+
+  &__row {
+    position: relative;
+    display: flex;
+    align-items: center;
+  }
+
+  &__item {
+    display: flex;
+    align-items: center;
+    gap: 0.625rem;
+    flex: 1 1 auto;
+    min-width: 0;
+    padding: 0.5rem;
+    border: 0;
+    border-radius: 0.5rem;
+    background: transparent;
+    text-align: left;
+
+    &:hover {
+      background: var(--db-surface-hover);
+    }
+
+    &--active {
+      background: var(--db-primary-soft);
+      color: var(--db-primary) !important;
+      font-weight: 600;
+    }
+  }
+
+  &__text {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  &__count {
+    color: var(--db-muted);
+    font-size: 0.75rem;
+  }
+
+  &__more {
+    display: inline-flex;
+    padding: 0.375rem;
+    border: 0;
+    border-radius: 0.375rem;
+    background: transparent;
+    opacity: 0;
+
+    @media (hover: none) {
+      opacity: 1;
+    }
+  }
+
+  &__row:hover &__more,
+  &__more:focus-visible,
+  &__more[aria-expanded="true"] {
+    opacity: 1;
+  }
+
+  &__menu {
+    top: 100%;
+    right: 0;
+  }
+
+  &__hint {
+    padding: 0.25rem 0.5rem;
+    color: var(--db-muted);
+    font-size: 0.8125rem;
+  }
+}
+
+// --- board cards -------------------------------------------------------------
+
+.boards-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
+  gap: 1.25rem;
+}
+
+.board-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-width: 0;
+
+  &__preview {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    aspect-ratio: 4 / 3;
+    padding: 0;
+    border: 1px solid var(--db-border);
+    border-radius: 0.75rem;
+    // thumbnails are rendered on white
+    background: #ffffff;
+    overflow: hidden;
+    filter: var(--db-thumbnail-filter);
+    transition: box-shadow 0.15s;
+
+    &:hover {
+      box-shadow: var(--db-shadow);
+    }
+
+    img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+    }
+  }
+
+  &__placeholder {
+    color: #8a8a94;
+  }
+
+  &__badge {
+    position: absolute;
+    right: 0.5rem;
+    bottom: 0.5rem;
+    padding: 0.125rem 0.5rem;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.9);
+    color: #45454f;
+    font-size: 0.75rem;
+  }
+
+  &__info {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.25rem;
+  }
+
+  &__text {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-width: 0;
+    padding: 0 0.25rem;
+  }
+
+  &__name {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    text-align: left;
+    font-weight: 600;
+  }
+
+  &__meta {
+    color: var(--db-muted);
+    font-size: 0.8125rem;
+  }
+
+  &__more {
+    display: inline-flex;
+    padding: 0.375rem;
+    border: 0;
+    border-radius: 0.375rem;
+    background: transparent;
+
+    &:hover {
+      background: var(--db-surface-hover);
+    }
+  }
+
+  &__menu {
+    top: calc(100% - 0.25rem);
+    right: 0;
+  }
+}

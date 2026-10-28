@@ -1,5 +1,4 @@
 import { CaptureUpdateAction } from "@excalidraw/excalidraw";
-import { EVENT, preventUnload } from "@excalidraw/common";
 import { isInitializedImageElement } from "@excalidraw/element";
 import {
   restoreAppState,
@@ -19,16 +18,10 @@ import { appJotaiStore, useAtomValue } from "../app-jotai";
 import { isBoardsMode } from "../app_constants";
 import { updateStaleImageStatuses } from "../data/FileManager";
 
-import { boardsApi, NotFoundError } from "./api";
+import { NotFoundError } from "./api";
 import { BoardStorage } from "./BoardStorage";
-import { boardIdFromPath, replaceBoardRoute } from "./routes";
-import { boardRouteAtom, saveStatusAtom } from "./state";
-
-/** The most recently updated board, or a new one if the user has none. */
-const getDefaultBoardId = async () => {
-  const [latest] = await boardsApi.listBoards();
-  return latest ? latest.id : (await boardsApi.createBoard()).id;
-};
+import { navigate } from "./routes";
+import { dashboardNoticeAtom, routeAtom, saveStatusAtom } from "./state";
 
 const loadBoardImages = async (
   excalidrawAPI: ExcalidrawImperativeAPI,
@@ -57,9 +50,9 @@ const loadBoardImages = async (
 };
 
 /**
- * Boards mode: opens the board named by the URL (`/board/:id`, or the latest
- * board on `/`), keeps it in sync with browser navigation, and saves pending
- * changes when the page is hidden or closed. No-op outside boards mode.
+ * Boards mode: loads the board named by the URL (`/board/:id`) into the editor,
+ * and switches boards in place when the route changes to another board. No-op
+ * outside boards mode.
  */
 export const useBoardsMode = ({
   excalidrawAPI,
@@ -70,29 +63,12 @@ export const useBoardsMode = ({
   initialStatePromise: ResolvablePromise<ExcalidrawInitialDataState | null>;
   setErrorMessage: (message: string) => void;
 }) => {
-  const routeBoardId = useAtomValue(boardRouteAtom);
+  const route = useAtomValue(routeAtom);
+  const routeBoardId = route?.page === "board" ? route.boardId : null;
   const isInitialLoadRef = useRef(true);
 
   useEffect(() => {
-    if (!isBoardsMode()) {
-      return;
-    }
-    appJotaiStore.set(
-      boardRouteAtom,
-      boardIdFromPath(window.location.pathname),
-    );
-    const onPopState = () => {
-      appJotaiStore.set(
-        boardRouteAtom,
-        boardIdFromPath(window.location.pathname),
-      );
-    };
-    window.addEventListener("popstate", onPopState);
-    return () => window.removeEventListener("popstate", onPopState);
-  }, []);
-
-  useEffect(() => {
-    if (!isBoardsMode() || !excalidrawAPI || routeBoardId === undefined) {
+    if (!isBoardsMode() || !excalidrawAPI || !routeBoardId) {
       return;
     }
     let cancelled = false;
@@ -124,11 +100,6 @@ export const useBoardsMode = ({
     };
 
     const load = async () => {
-      if (!routeBoardId) {
-        // `/` resolves to a board; the route change re-runs this effect
-        replaceBoardRoute(await getDefaultBoardId());
-        return;
-      }
       if (!isInitialLoadRef.current) {
         excalidrawAPI.updateScene({ appState: { isLoading: true } });
       }
@@ -150,6 +121,14 @@ export const useBoardsMode = ({
       };
       finishLoading({ elements, appState });
       await loadBoardImages(excalidrawAPI, elements);
+      if (!cancelled && !board.thumbnailUpdatedAt && elements.length) {
+        // boards from before thumbnails existed get one once opened
+        BoardStorage.queueThumbnail(
+          excalidrawAPI.getSceneElementsIncludingDeleted(),
+          excalidrawAPI.getAppState(),
+          excalidrawAPI.getFiles(),
+        );
+      }
     };
 
     load().catch((error) => {
@@ -157,8 +136,11 @@ export const useBoardsMode = ({
         return;
       }
       if (error instanceof NotFoundError) {
-        setErrorMessage("This board doesn't exist or was deleted.");
-        replaceBoardRoute(null);
+        appJotaiStore.set(
+          dashboardNoticeAtom,
+          "That board doesn't exist, was deleted, or isn't shared with you.",
+        );
+        navigate({ page: "home" }, { replace: true });
         return;
       }
       console.error(error);
@@ -173,34 +155,4 @@ export const useBoardsMode = ({
       cancelled = true;
     };
   }, [excalidrawAPI, routeBoardId, initialStatePromise, setErrorMessage]);
-
-  useEffect(() => {
-    if (!isBoardsMode()) {
-      return;
-    }
-    const onVisibilityChange = () => {
-      if (document.hidden) {
-        BoardStorage.flushSave();
-      }
-    };
-    const onBlur = () => BoardStorage.flushSave();
-    const onBeforeUnload = (event: BeforeUnloadEvent) => {
-      BoardStorage.flushSave();
-      if (BoardStorage.hasUnsavedChanges()) {
-        preventUnload(event);
-      }
-    };
-    const onOnline = () => BoardStorage.retryNow();
-
-    window.addEventListener(EVENT.BLUR, onBlur);
-    document.addEventListener(EVENT.VISIBILITY_CHANGE, onVisibilityChange);
-    window.addEventListener(EVENT.BEFORE_UNLOAD, onBeforeUnload);
-    window.addEventListener("online", onOnline);
-    return () => {
-      window.removeEventListener(EVENT.BLUR, onBlur);
-      document.removeEventListener(EVENT.VISIBILITY_CHANGE, onVisibilityChange);
-      window.removeEventListener(EVENT.BEFORE_UNLOAD, onBeforeUnload);
-      window.removeEventListener("online", onOnline);
-    };
-  }, []);
 };

@@ -5,7 +5,7 @@ import { useAtomValue } from "../app-jotai";
 
 import { boardsApi } from "./api";
 import { BoardStorage } from "./BoardStorage";
-import { navigateToBoard } from "./routes";
+import { navigate } from "./routes";
 import { boardsListVersionAtom, currentBoardAtom } from "./state";
 
 import type { BoardSummary } from "./api";
@@ -38,7 +38,7 @@ const BoardRow = ({
       return;
     }
     try {
-      await boardsApi.renameBoard(board.id, nextName);
+      await boardsApi.updateBoard(board.id, { name: nextName });
       if (isCurrent) {
         BoardStorage.setBoardName(nextName);
       }
@@ -57,7 +57,11 @@ const BoardRow = ({
       if (isCurrent) {
         // the board is gone, so its unsaved changes can't be saved anywhere
         BoardStorage.close();
-        await navigateToBoard(null);
+        await navigate({
+          page: "dashboard",
+          workspaceId: board.workspaceId,
+          collection: null,
+        });
       }
     } catch (error: any) {
       onError(error.message);
@@ -112,7 +116,7 @@ const BoardRow = ({
       <button
         type="button"
         className="boards-list__open"
-        onClick={() => navigateToBoard(board.id)}
+        onClick={() => navigate({ page: "board", boardId: board.id })}
       >
         <span className="boards-list__name">{board.name}</span>
         <span className="boards-list__meta">
@@ -139,20 +143,28 @@ const BoardRow = ({
   );
 };
 
+// the sidebar is for quick switching; the dashboard lists everything
+const SIDEBAR_BOARDS_LIMIT = 100;
+
+/** Boards of the open board's workspace, for switching without the dashboard. */
 export const BoardsSidebarTab = () => {
   const currentBoard = useAtomValue(currentBoardAtom);
+  const workspaceId = currentBoard?.workspaceId;
   const listVersion = useAtomValue(boardsListVersionAtom);
   const [boards, setBoards] = useState<BoardSummary[] | null>(null);
   const [error, setError] = useState("");
   const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
+    if (!workspaceId) {
+      return;
+    }
     let cancelled = false;
     boardsApi
-      .listBoards()
-      .then((boards) => {
+      .listBoards(workspaceId, { limit: SIDEBAR_BOARDS_LIMIT })
+      .then((page) => {
         if (!cancelled) {
-          setBoards(boards);
+          setBoards(page.boards);
         }
       })
       .catch((error) => {
@@ -163,15 +175,20 @@ export const BoardsSidebarTab = () => {
     return () => {
       cancelled = true;
     };
-  }, [listVersion, refreshKey]);
+  }, [workspaceId, listVersion, refreshKey]);
 
   const refresh = () => setRefreshKey((key) => key + 1);
 
   const createBoard = async () => {
+    if (!workspaceId) {
+      return;
+    }
     try {
-      const board = await boardsApi.createBoard();
+      const board = await boardsApi.createBoard(workspaceId, {
+        collectionId: currentBoard?.collectionId,
+      });
       refresh();
-      await navigateToBoard(board.id);
+      await navigate({ page: "board", boardId: board.id });
     } catch (error: any) {
       setError(error.message);
     }
@@ -181,6 +198,17 @@ export const BoardsSidebarTab = () => {
     <div className="boards-sidebar">
       <div className="boards-sidebar__header">
         <h2 className="boards-sidebar__title">Boards</h2>
+        {workspaceId && (
+          <button
+            type="button"
+            className="boards-sidebar__link"
+            onClick={() =>
+              navigate({ page: "dashboard", workspaceId, collection: null })
+            }
+          >
+            Dashboard
+          </button>
+        )}
         <button
           type="button"
           className="boards-sidebar__new"

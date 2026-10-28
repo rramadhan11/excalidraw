@@ -2,6 +2,8 @@
 export const SAVE_TO_LOCAL_STORAGE_TIMEOUT = 300;
 export const SAVE_TO_BOARDS_SERVER_TIMEOUT = 1000;
 export const BOARDS_SAVE_RETRY_TIMEOUT = 5000;
+// boards mode: a board's dashboard thumbnail is re-rendered at most this often
+export const BOARDS_THUMBNAIL_INTERVAL = 30000;
 export const INITIAL_SCENE_UPDATE_TIMEOUT = 5000;
 export const FILE_UPLOAD_TIMEOUT = 300;
 export const LOAD_IMAGES_TIMEOUT = 500;

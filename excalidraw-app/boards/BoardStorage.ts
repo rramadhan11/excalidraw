@@ -23,6 +23,7 @@ import type {
 import { appJotaiStore } from "../app-jotai";
 import {
   BOARDS_SAVE_RETRY_TIMEOUT,
+  BOARDS_THUMBNAIL_INTERVAL,
   SAVE_TO_BOARDS_SERVER_TIMEOUT,
 } from "../app_constants";
 import { FileManager } from "../data/FileManager";
@@ -32,9 +33,11 @@ import {
   boardsApi,
   ConflictError,
   NotFoundError,
+  thumbnailsApi,
   UnauthorizedError,
   type Board,
 } from "./api";
+import { renderThumbnail } from "./thumbnail";
 import {
   authStateAtom,
   boardsListVersionAtom,
@@ -51,6 +54,27 @@ type PendingSave = {
 };
 
 type BlockReason = "conflict" | "deleted" | "unauthorized";
+
+type ThumbnailJob = {
+  boardId: string;
+  elements: readonly ExcalidrawElement[];
+  appState: AppState;
+  files: BinaryFiles;
+};
+
+/**
+ * Thumbnails are a convenience for the dashboard: failures are logged, never
+ * surfaced as a save error.
+ */
+const uploadThumbnail = async (job: ThumbnailJob) => {
+  const elements = getNonDeletedElements(job.elements);
+  if (!elements.length) {
+    await thumbnailsApi.delete(job.boardId);
+    return;
+  }
+  const image = await renderThumbnail(elements, job.appState, job.files);
+  await thumbnailsApi.put(job.boardId, image);
+};
 
 /** the part of the editor state that is stored on the server */
 const serializeScene = (
@@ -104,6 +128,11 @@ export class BoardStorage {
   private static retryTimer: ReturnType<typeof setTimeout> | null = null;
   private static openSeq = 0;
 
+  private static thumbnailJob: ThumbnailJob | null = null;
+  private static thumbnailTimer: ReturnType<typeof setTimeout> | null = null;
+  private static thumbnailInFlight: Promise<void> = Promise.resolve();
+  private static lastThumbnailAt = 0;
+
   /** replaced per board, since its saved-file bookkeeping is per board */
   static fileStorage: FileManager = createFileManager("");
 
@@ -127,12 +156,8 @@ export class BoardStorage {
     }
     this.board = { id: board.id, version: board.version };
     this.fileStorage = createFileManager(board.id);
-    appJotaiStore.set(currentBoardAtom, {
-      id: board.id,
-      name: board.name,
-      createdAt: board.createdAt,
-      updatedAt: board.updatedAt,
-    });
+    const { scene, version, ...summary } = board;
+    appJotaiStore.set(currentBoardAtom, summary);
     setStatus("saved");
     return board;
   }
@@ -142,6 +167,11 @@ export class BoardStorage {
   static close() {
     this._debouncedFlush.cancel();
     this.clearRetry();
+    if (this.thumbnailTimer) {
+      clearTimeout(this.thumbnailTimer);
+      this.thumbnailTimer = null;
+    }
+    this.thumbnailJob = null;
     this.board = null;
     this.pending = null;
     this.blocked = null;
@@ -176,11 +206,47 @@ export class BoardStorage {
     this._debouncedFlush.flush();
   };
 
+  /** Saves pending changes and the pending thumbnail, and waits for both. */
   static async flushAndWait() {
     this._debouncedFlush.flush();
     while (this.inFlight) {
       await this.inFlight;
     }
+    await this.flushThumbnail();
+  }
+
+  /**
+   * Queues a dashboard thumbnail of the scene. Rendering is throttled to once
+   * per BOARDS_THUMBNAIL_INTERVAL; flushThumbnail() renders it right away.
+   */
+  static queueThumbnail(
+    elements: readonly ExcalidrawElement[],
+    appState: AppState,
+    files: BinaryFiles,
+  ) {
+    if (!this.board) {
+      return;
+    }
+    this.thumbnailJob = { boardId: this.board.id, elements, appState, files };
+    if (this.thumbnailTimer) {
+      return;
+    }
+    const delay = Math.max(
+      0,
+      this.lastThumbnailAt + BOARDS_THUMBNAIL_INTERVAL - Date.now(),
+    );
+    this.thumbnailTimer = setTimeout(() => {
+      this.thumbnailTimer = null;
+      this.renderQueuedThumbnail();
+    }, delay);
+  }
+
+  static flushThumbnail(): Promise<void> {
+    if (this.thumbnailTimer) {
+      clearTimeout(this.thumbnailTimer);
+      this.thumbnailTimer = null;
+    }
+    return this.renderQueuedThumbnail();
   }
 
   static isSavePaused = () => {
@@ -227,6 +293,21 @@ export class BoardStorage {
 
   // ---------------------------------------------------------------------------
 
+  /** Uploads run one after another, so an older thumbnail never wins. */
+  private static renderQueuedThumbnail(): Promise<void> {
+    const job = this.thumbnailJob;
+    this.thumbnailJob = null;
+    if (job) {
+      this.lastThumbnailAt = Date.now();
+      this.thumbnailInFlight = this.thumbnailInFlight.then(() =>
+        uploadThumbnail(job).catch((error) => {
+          console.warn("board thumbnail not updated", error);
+        }),
+      );
+    }
+    return this.thumbnailInFlight;
+  }
+
   private static flush(): Promise<void> {
     if (!this.inFlight) {
       this.inFlight = this.drain().finally(() => {
@@ -265,6 +346,7 @@ export class BoardStorage {
         board.version = res.version;
         this.lastSavedScene = scene;
         appJotaiStore.set(boardsListVersionAtom, (v) => v + 1);
+        this.queueThumbnail(save.elements, save.appState, save.files);
       }
       if (erroredFiles.size) {
         throw new Error(`failed to upload ${erroredFiles.size} image(s)`);
