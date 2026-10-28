@@ -1,0 +1,45 @@
+# Self-hosted excalidraw with boards: see deploy/README.md.
+#
+#   cd deploy && cp .env.example .env   # then fill it in
+#   docker compose up -d --build
+name: excalidraw
+
+services:
+  web:
+    build:
+      context: ..
+      dockerfile: deploy/web.Dockerfile
+    image: excalidraw-web:local
+    restart: unless-stopped
+    depends_on:
+      server:
+        condition: service_healthy
+    # localhost only: the host's Caddy terminates TLS and proxies here
+    ports:
+      - "127.0.0.1:${WEB_PORT:-8090}:80"
+    networks:
+      internal: {}
+
+  server:
+    build:
+      context: ../excalidraw-server
+    image: excalidraw-server:local
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in deploy/.env}
+      COOKIE_SECURE: "true"
+      TRUST_PROXY_HEADERS: "true"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    networks:
+      - internal
+      - postgres
+    # small Go service; caps keep it from ever crowding out other apps
+    mem_limit: 256m
+    cpus: 1.0
+
+networks:
+  internal: {}
+  # the network of the Postgres container that is already running
+  postgres:
+    external: true
+    name: ${POSTGRES_NETWORK:?set POSTGRES_NETWORK in deploy/.env}

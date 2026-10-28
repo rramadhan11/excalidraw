@@ -1,0 +1,17 @@
+# Only if Caddy runs in a Docker container (not on the host): also attaches
+# the web container to Caddy's network, so Caddy can reach it as
+# `excalidraw-web:80`.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.caddy-network.yml up -d
+services:
+  web:
+    networks:
+      internal: {}
+      caddy:
+        aliases:
+          - excalidraw-web
+
+networks:
+  caddy:
+    external: true
+    name: ${CADDY_NETWORK:?set CADDY_NETWORK in deploy/.env}
