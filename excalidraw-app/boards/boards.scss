@@ -9,6 +9,16 @@
   --boards-login-primary-hover: #5753d0;
   --boards-login-danger: #b3261e;
 
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  background: var(--boards-login-bg);
+  color: var(--boards-login-text);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+
   @media (prefers-color-scheme: dark) {
     --boards-login-bg: #121214;
     --boards-login-card: #1e1e24;
@@ -19,16 +29,6 @@
     --boards-login-primary-hover: #bbb8ff;
     --boards-login-danger: #ffb4ab;
   }
-
-  position: fixed;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 1rem;
-  background: var(--boards-login-bg);
-  color: var(--boards-login-text);
-  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 
   &--overlay {
     z-index: 100;
@@ -282,7 +282,7 @@
       }
     }
 
-    &__item:hover &__action,
+    &__item:hover .boards-list__action,
     &__action:focus-visible {
       opacity: 1;
     }
