@@ -1,5 +1,7 @@
 // time constants (ms)
 export const SAVE_TO_LOCAL_STORAGE_TIMEOUT = 300;
+export const SAVE_TO_BOARDS_SERVER_TIMEOUT = 1000;
+export const BOARDS_SAVE_RETRY_TIMEOUT = 5000;
 export const INITIAL_SCENE_UPDATE_TIMEOUT = 5000;
 export const FILE_UPLOAD_TIMEOUT = 300;
 export const LOAD_IMAGES_TIMEOUT = 500;
@@ -59,3 +61,14 @@ export const COOKIES = {
 export const isExcalidrawPlusSignedUser = document.cookie.includes(
   COOKIES.AUTH_STATE_COOKIE,
 );
+
+/**
+ * Base URL of excalidraw-server's API (e.g. "/api"). When set, the app runs in
+ * boards mode: each user's boards are stored on that server instead of a
+ * single scene in localStorage, and features that depend on excalidraw.com
+ * services (share links, live collaboration, AI, Excalidraw+) are hidden.
+ *
+ * Read on every call (not cached) so tests can stub the env.
+ */
+export const getBoardsApiBase = () => import.meta.env.VITE_APP_BOARDS_API || "";
+export const isBoardsMode = () => !!getBoardsApiBase();

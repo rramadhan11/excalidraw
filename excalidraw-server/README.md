@@ -1,8 +1,6 @@
 # excalidraw-server
 
-Board storage API for self-hosted `excalidraw-app`: user accounts (session
-cookies), boards (scene JSON) and image files, stored in Postgres. See
-[`deploy/BOARDS_PLAN.md`](../deploy/BOARDS_PLAN.md) for the design.
+Board storage API for self-hosted `excalidraw-app`: user accounts (session cookies), boards (scene JSON) and image files, stored in Postgres. See [`deploy/BOARDS_PLAN.md`](../deploy/BOARDS_PLAN.md) for the design.
 
 ## Commands
 
@@ -14,29 +12,25 @@ excalidraw-server user list
 excalidraw-server healthcheck                             # used by the Docker HEALTHCHECK
 ```
 
-There is no public sign-up; accounts are created with `user create`. When
-stdin is not a terminal the password is read from its first line
-(`echo "$PW" | excalidraw-server user create ...`).
+There is no public sign-up; accounts are created with `user create`. When stdin is not a terminal the password is read from its first line (`echo "$PW" | excalidraw-server user create ...`).
 
-| Env | Default | |
-|---|---|---|
+| Env | Default |  |
+| --- | --- | --- |
 | `DATABASE_URL` | (required) | Postgres connection string |
-| `LISTEN_ADDR` | `:8080` | |
+| `LISTEN_ADDR` | `:8080` |  |
 | `COOKIE_SECURE` | `true` | `false` only for local http development |
 | `TRUST_PROXY_HEADERS` | `false` | `true` behind nginx so rate limiting uses `X-Real-IP` |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
 
 ## API
 
-Every request that changes state must send `X-Requested-With: excalidraw`
-(CSRF guard). Errors are `{"error": {"code", "message"}}`. Boards owned by
-another user return 404.
+Every request that changes state must send `X-Requested-With: excalidraw` (CSRF guard). Errors are `{"error": {"code", "message"}}`. Boards owned by another user return 404.
 
-| Route | |
-|---|---|
+| Route |  |
+| --- | --- |
 | `POST /api/auth/login` `{email, password}` | sets the session cookie |
-| `POST /api/auth/logout` | |
-| `GET /api/auth/me` | |
+| `POST /api/auth/logout` |  |
+| `GET /api/auth/me` |  |
 | `GET /api/boards` | `{boards: [{id, name, createdAt, updatedAt}]}`, newest first |
 | `POST /api/boards` `{name?}` | creates an empty board |
 | `GET /api/boards/{id}` | `{id, name, version, scene, ...}` |

@@ -89,10 +89,15 @@ import {
 } from "./app-jotai";
 import {
   FIREBASE_STORAGE_PREFIXES,
+  isBoardsMode,
   isExcalidrawPlusSignedUser,
   STORAGE_KEYS,
   SYNC_BROWSER_TABS_TIMEOUT,
 } from "./app_constants";
+import { BoardsAuthGate } from "./boards/BoardsAuthGate";
+import { BoardStorage } from "./boards/BoardStorage";
+import { SaveStatus } from "./boards/SaveStatus";
+import { useBoardsMode } from "./boards/useBoardsMode";
 import Collab, {
   collabAPIAtom,
   isCollaboratingAtom,
@@ -376,7 +381,8 @@ const ExcalidrawWrapper = () => {
   const excalidrawAPI = useExcalidrawAPI();
 
   const [errorMessage, setErrorMessage] = useState("");
-  const isCollabDisabled = isRunningInIframe();
+  // boards mode: no live collaboration (it relies on excalidraw.com servers)
+  const isCollabDisabled = isRunningInIframe() || isBoardsMode();
 
   const { editorTheme, appTheme, setAppTheme } = useHandleAppTheme();
 
@@ -396,6 +402,14 @@ const ExcalidrawWrapper = () => {
   }
 
   const debugCanvasRef = useRef<HTMLCanvasElement>(null);
+
+  // boards mode: scene loading/saving is handled by useBoardsMode instead of
+  // initializeScene + LocalData below
+  useBoardsMode({
+    excalidrawAPI,
+    initialStatePromise: initialStatePromiseRef.current.promise,
+    setErrorMessage,
+  });
 
   useEffect(() => {
     trackEvent("load", "frame", getFrame());
@@ -558,7 +572,12 @@ const ExcalidrawWrapper = () => {
   );
 
   useEffect(() => {
-    if (!excalidrawAPI || (!isCollabDisabled && !collabAPI)) {
+    if (
+      !excalidrawAPI ||
+      (!isCollabDisabled && !collabAPI) ||
+      // boards mode
+      isBoardsMode()
+    ) {
       return;
     }
 
@@ -688,6 +707,10 @@ const ExcalidrawWrapper = () => {
   }, [isCollabDisabled, collabAPI, excalidrawAPI, setLangCode, loadImages]);
 
   useEffect(() => {
+    // boards mode: useBoardsMode guards unload
+    if (isBoardsMode()) {
+      return;
+    }
     const unloadHandler = (event: BeforeUnloadEvent) => {
       LocalData.flushSave();
 
@@ -721,10 +744,13 @@ const ExcalidrawWrapper = () => {
       collabAPI.syncElements(elements);
     }
 
+    // boards mode: same interface, saves to the boards server
+    const persistence = isBoardsMode() ? BoardStorage : LocalData;
+
     // this check is redundant, but since this is a hot path, it's best
     // not to evaludate the nested expression every time
-    if (!LocalData.isSavePaused()) {
-      LocalData.save(elements, appState, files, () => {
+    if (!persistence.isSavePaused()) {
+      persistence.save(elements, appState, files, () => {
         if (excalidrawAPI) {
           let didChange = false;
 
@@ -732,7 +758,7 @@ const ExcalidrawWrapper = () => {
             .getSceneElementsIncludingDeleted()
             .map((element) => {
               if (
-                LocalData.fileStorage.shouldUpdateImageElementStatus(element)
+                persistence.fileStorage.shouldUpdateImageElementStatus(element)
               ) {
                 const newElement = newElementWith(element, { status: "saved" });
                 if (newElement !== element) {
@@ -965,31 +991,33 @@ const ExcalidrawWrapper = () => {
           canvasActions: {
             toggleTheme: true,
             export: {
-              onExportToBackend,
-              renderCustomUI: excalidrawAPI
-                ? (elements, appState, files) => {
-                    return (
-                      <ExportToExcalidrawPlus
-                        elements={elements}
-                        appState={appState}
-                        files={files}
-                        name={excalidrawAPI.getName()}
-                        onError={(error) => {
-                          excalidrawAPI?.updateScene({
-                            appState: {
-                              errorMessage: error.message,
-                            },
-                          });
-                        }}
-                        onSuccess={() => {
-                          excalidrawAPI.updateScene({
-                            appState: { openDialog: null },
-                          });
-                        }}
-                      />
-                    );
-                  }
-                : undefined,
+              // boards mode: share links and Excalidraw+ live on excalidraw.com
+              onExportToBackend: isBoardsMode() ? undefined : onExportToBackend,
+              renderCustomUI:
+                excalidrawAPI && !isBoardsMode()
+                  ? (elements, appState, files) => {
+                      return (
+                        <ExportToExcalidrawPlus
+                          elements={elements}
+                          appState={appState}
+                          files={files}
+                          name={excalidrawAPI.getName()}
+                          onError={(error) => {
+                            excalidrawAPI?.updateScene({
+                              appState: {
+                                errorMessage: error.message,
+                              },
+                            });
+                          }}
+                          onSuccess={() => {
+                            excalidrawAPI.updateScene({
+                              appState: { openDialog: null },
+                            });
+                          }}
+                        />
+                      );
+                    }
+                  : undefined,
             },
           },
         }}
@@ -1001,6 +1029,14 @@ const ExcalidrawWrapper = () => {
         theme={editorTheme}
         onThemeChange={setAppTheme}
         renderTopRightUI={(isMobile) => {
+          // boards mode
+          if (isBoardsMode()) {
+            return (
+              <div className="excalidraw-ui-top-right">
+                <SaveStatus />
+              </div>
+            );
+          }
           if (isMobile || !collabAPI || !isCollabAvailable) {
             return null;
           }
@@ -1049,7 +1085,7 @@ const ExcalidrawWrapper = () => {
         <OverwriteConfirmDialog>
           <OverwriteConfirmDialog.Actions.ExportToImage />
           <OverwriteConfirmDialog.Actions.SaveToDisk />
-          {excalidrawAPI && (
+          {excalidrawAPI && !isBoardsMode() && (
             <OverwriteConfirmDialog.Action
               title={t("overwriteConfirm.action.excalidrawPlus.title")}
               actionLabel={t("overwriteConfirm.action.excalidrawPlus.button")}
@@ -1067,9 +1103,12 @@ const ExcalidrawWrapper = () => {
           )}
         </OverwriteConfirmDialog>
         <AppFooter onChange={() => excalidrawAPI?.refresh()} />
-        {excalidrawAPI && <AIComponents excalidrawAPI={excalidrawAPI} />}
+        {/* boards mode: the AI backend is excalidraw.com's */}
+        {excalidrawAPI && !isBoardsMode() && (
+          <AIComponents excalidrawAPI={excalidrawAPI} />
+        )}
 
-        <TTDDialogTrigger />
+        {!isBoardsMode() && <TTDDialogTrigger />}
         {isCollaborating && isOffline && (
           <div className="alertalert--warning">
             {t("alerts.collabOfflineWarning")}
@@ -1255,7 +1294,9 @@ const ExcalidrawWrapper = () => {
                 );
               },
             },
-            ...(isExcalidrawPlusSignedUser
+            ...(isBoardsMode()
+              ? []
+              : isExcalidrawPlusSignedUser
               ? [
                   {
                     ...ExcalidrawPlusAppCommand,
@@ -1268,7 +1309,7 @@ const ExcalidrawWrapper = () => {
               label: t("overwriteConfirm.action.excalidrawPlus.button"),
               category: DEFAULT_CATEGORIES.export,
               icon: exportToPlus,
-              predicate: true,
+              predicate: !isBoardsMode(),
               keywords: ["plus", "export", "save", "backup"],
               perform: () => {
                 if (excalidrawAPI) {
@@ -1321,7 +1362,13 @@ const ExcalidrawApp = () => {
     <TopErrorBoundary>
       <Provider store={appJotaiStore}>
         <ExcalidrawAPIProvider>
-          <ExcalidrawWrapper />
+          {isBoardsMode() ? (
+            <BoardsAuthGate>
+              <ExcalidrawWrapper />
+            </BoardsAuthGate>
+          ) : (
+            <ExcalidrawWrapper />
+          )}
         </ExcalidrawAPIProvider>
       </Provider>
     </TopErrorBoundary>

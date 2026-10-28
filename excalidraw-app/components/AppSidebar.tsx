@@ -1,10 +1,15 @@
 import { DefaultSidebar, Sidebar, THEME } from "@excalidraw/excalidraw";
 import {
+  LoadIcon,
   messageCircleIcon,
   presentationIcon,
 } from "@excalidraw/excalidraw/components/icons";
 import { LinkButton } from "@excalidraw/excalidraw/components/LinkButton";
 import { useUIAppState } from "@excalidraw/excalidraw/context/ui-appState";
+
+import { isBoardsMode } from "../app_constants";
+import { BoardsSidebarTab } from "../boards/BoardsSidebarTab";
+import { BOARDS_SIDEBAR_TAB } from "../boards/SaveStatus";
 
 import "./AppSidebar.scss";
 
@@ -67,6 +72,28 @@ const SidebarPromoCopy = (props: SidebarPromoCopyProps) => {
 
 export const AppSidebar = () => {
   const { theme, openSidebar } = useUIAppState();
+
+  // boards mode: a boards list instead of the Excalidraw+ promos
+  if (isBoardsMode()) {
+    return (
+      <DefaultSidebar>
+        <DefaultSidebar.TabTriggers>
+          <Sidebar.TabTrigger
+            tab={BOARDS_SIDEBAR_TAB}
+            title="Boards"
+            style={{
+              opacity: openSidebar?.tab === BOARDS_SIDEBAR_TAB ? 1 : 0.4,
+            }}
+          >
+            {LoadIcon}
+          </Sidebar.TabTrigger>
+        </DefaultSidebar.TabTriggers>
+        <Sidebar.Tab tab={BOARDS_SIDEBAR_TAB}>
+          <BoardsSidebarTab />
+        </Sidebar.Tab>
+      </DefaultSidebar>
+    );
+  }
 
   return (
     <DefaultSidebar>

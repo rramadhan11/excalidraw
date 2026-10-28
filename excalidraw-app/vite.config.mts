@@ -110,6 +110,10 @@ export default defineConfig(({ mode }) => {
       port: Number(envVars.VITE_APP_PORT || 3000),
       // open the browser
       open: true,
+      // boards mode: forward the API to a local excalidraw-server
+      proxy: envVars.VITE_APP_BOARDS_API
+        ? { [envVars.VITE_APP_BOARDS_API]: "http://localhost:8080" }
+        : undefined,
     },
     // We need to specify the envDir since now there are no
     //more located in parallel with the vite.config.ts file but in parent dir

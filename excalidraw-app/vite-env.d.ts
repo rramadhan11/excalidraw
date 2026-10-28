@@ -36,6 +36,9 @@ interface ImportMetaEnv {
 
   VITE_APP_PLUS_APP: string;
 
+  // excalidraw-server API base (e.g. "/api"); enables boards mode when set
+  VITE_APP_BOARDS_API: string;
+
   VITE_APP_GIT_SHA: string;
 
   MODE: string;
