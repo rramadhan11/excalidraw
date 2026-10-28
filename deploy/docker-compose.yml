@@ -14,7 +14,9 @@ services:
     depends_on:
       server:
         condition: service_healthy
-    # localhost only: the host's Caddy terminates TLS and proxies here
+    # localhost only: TLS is terminated by Caddy, which reaches this container
+    # over its own Docker network (docker-compose.caddy-network.yml) or, when
+    # Caddy runs on the host, through this port
     ports:
       - "127.0.0.1:${WEB_PORT:-8090}:80"
     networks:
@@ -25,21 +27,43 @@ services:
       context: ../excalidraw-server
     image: excalidraw-server:local
     restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
     environment:
-      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in deploy/.env}
+      DATABASE_URL: postgres://excalidraw:${POSTGRES_PASSWORD}@db:5432/excalidraw?sslmode=disable
       COOKIE_SECURE: "true"
       TRUST_PROXY_HEADERS: "true"
       LOG_LEVEL: ${LOG_LEVEL:-info}
     networks:
       - internal
-      - postgres
     # small Go service; caps keep it from ever crowding out other apps
     mem_limit: 256m
     cpus: 1.0
 
+  # Its own database, so excalidraw data never depends on another app's
+  # lifecycle. Not published on any host port.
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: excalidraw
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env}
+      POSTGRES_DB: excalidraw
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U excalidraw -d excalidraw"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - internal
+    mem_limit: 512m
+    cpus: 1.0
+
 networks:
   internal: {}
-  # the network of the Postgres container that is already running
-  postgres:
-    external: true
-    name: ${POSTGRES_NETWORK:?set POSTGRES_NETWORK in deploy/.env}
+
+volumes:
+  pgdata: {}
