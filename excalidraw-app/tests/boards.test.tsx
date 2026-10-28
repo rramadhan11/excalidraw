@@ -130,15 +130,14 @@ class FakeServer {
 let server: FakeServer;
 
 const addRectangle = (id: string) => {
+  const rectangle = API.createElement({ type: "rectangle", id, x: 0, y: 0 });
   act(() => {
     API.updateScene({
-      elements: [
-        ...h.elements,
-        API.createElement({ type: "rectangle", id, x: 0, y: 0 }),
-      ],
+      elements: [...h.elements, rectangle],
       captureUpdate: CaptureUpdateAction.IMMEDIATELY,
     });
   });
+  return rectangle;
 };
 
 describe("boards mode", () => {
@@ -209,7 +208,7 @@ describe("boards mode", () => {
     await act(() => BoardStorage.flushAndWait());
     expect(server.sceneSaves).toHaveLength(0);
 
-    addRectangle("added");
+    const added = addRectangle("added");
     await act(() => BoardStorage.flushAndWait());
 
     expect(server.sceneSaves).toHaveLength(1);
@@ -224,7 +223,7 @@ describe("boards mode", () => {
 
     // selection changes are not persisted, so they don't trigger a save
     act(() => {
-      API.setSelectedElements([h.elements[0]]);
+      API.setSelectedElements([added]);
     });
     await act(() => BoardStorage.flushAndWait());
     expect(server.sceneSaves).toHaveLength(1);
