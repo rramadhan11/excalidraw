@@ -39,6 +39,18 @@ func Migrate(ctx context.Context, databaseURL string) ([]*goose.MigrationResult,
 	}
 	defer sqlDB.Close()
 
+	provider, err := newProvider(sqlDB)
+	if err != nil {
+		return nil, err
+	}
+	results, err := provider.Up(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("apply migrations: %w", err)
+	}
+	return results, nil
+}
+
+func newProvider(sqlDB *sql.DB) (*goose.Provider, error) {
 	dir, err := fs.Sub(migrations, "migrations")
 	if err != nil {
 		return nil, err
@@ -47,9 +59,5 @@ func Migrate(ctx context.Context, databaseURL string) ([]*goose.MigrationResult,
 	if err != nil {
 		return nil, fmt.Errorf("init migrations: %w", err)
 	}
-	results, err := provider.Up(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("apply migrations: %w", err)
-	}
-	return results, nil
+	return provider, nil
 }

@@ -32,6 +32,7 @@ import (
 	"github.com/rramadhan11/excalidraw/excalidraw-server/internal/auth"
 	"github.com/rramadhan11/excalidraw/excalidraw-server/internal/db"
 	"github.com/rramadhan11/excalidraw/excalidraw-server/internal/server"
+	"github.com/rramadhan11/excalidraw/excalidraw-server/internal/workspaces"
 )
 
 const usage = `usage:
@@ -245,7 +246,7 @@ func userCommand(args []string) error {
 		if err != nil {
 			return err
 		}
-		user, err := users.Create(ctx, *email, *name, password)
+		user, err := users.Create(ctx, *email, *name, password, workspaces.ProvisionPersonal)
 		if err != nil {
 			return err
 		}

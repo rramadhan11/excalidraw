@@ -94,7 +94,11 @@ func NewUsers(pool *pgxpool.Pool) *Users {
 	return &Users{pool: pool}
 }
 
-func (u *Users) Create(ctx context.Context, email, name, password string) (User, error) {
+// Create adds a user. provision runs in the same transaction, so records every
+// user needs (their first workspace) exist if and only if the user does.
+func (u *Users) Create(ctx context.Context, email, name, password string,
+	provision func(ctx context.Context, tx pgx.Tx, user User) error,
+) (User, error) {
 	email = NormalizeEmail(email)
 	name = strings.TrimSpace(name)
 	if err := ValidateEmail(email); err != nil {
@@ -112,16 +116,25 @@ func (u *Users) Create(ctx context.Context, email, name, password string) (User,
 	}
 
 	var user User
-	err = u.pool.QueryRow(ctx,
-		`INSERT INTO users (email, name, password_hash) VALUES ($1, $2, $3)
-		 RETURNING id, email, name, created_at`,
-		email, name, hash,
-	).Scan(&user.ID, &user.Email, &user.Name, &user.CreatedAt)
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-		return User{}, ErrEmailTaken
+	err = pgx.BeginFunc(ctx, u.pool, func(tx pgx.Tx) error {
+		err := tx.QueryRow(ctx,
+			`INSERT INTO users (email, name, password_hash) VALUES ($1, $2, $3)
+			 RETURNING id, email, name, created_at`,
+			email, name, hash,
+		).Scan(&user.ID, &user.Email, &user.Name, &user.CreatedAt)
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return ErrEmailTaken
+		}
+		if err != nil {
+			return err
+		}
+		return provision(ctx, tx, user)
+	})
+	if err != nil {
+		return User{}, err
 	}
-	return user, err
+	return user, nil
 }
 
 // SetPassword replaces a user's password and revokes all their sessions.

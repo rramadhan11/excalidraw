@@ -1,32 +1,50 @@
-// Package boards stores boards and their image files. Every exported Store
-// method checks access through authorize, so handlers cannot forget it.
+// Package boards stores boards, their image files and thumbnails. Every
+// exported Store method checks access through the access package first, so
+// handlers cannot forget it.
 package boards
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/rramadhan11/excalidraw/excalidraw-server/internal/access"
+	"github.com/rramadhan11/excalidraw/excalidraw-server/internal/apperr"
 )
 
-// ErrNotFound is also returned for boards the user may not access, so board
-// ids owned by others are indistinguishable from nonexistent ones.
-var ErrNotFound = errors.New("board not found")
+var (
+	ErrNotFound           = apperr.NotFound("board not found")
+	ErrCollectionNotFound = apperr.NotFound("collection not found in this workspace")
+)
 
-// ConflictError means the scene was saved by someone else (another tab or
-// device) since the client last loaded it.
+// ConflictError means the scene was saved by someone else (another tab,
+// device or member) since the client last loaded it.
 type ConflictError struct{ CurrentVersion int64 }
 
 func (e *ConflictError) Error() string { return "board was modified elsewhere" }
 
+type UserRef struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
 type Summary struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
+	ID           string  `json:"id"`
+	Name         string  `json:"name"`
+	WorkspaceID  string  `json:"workspaceId"`
+	CollectionID *string `json:"collectionId"`
+	// nil once the creator's account is deleted
+	CreatedBy *UserRef  `json:"createdBy"`
 	CreatedAt time.Time `json:"createdAt"`
-	UpdatedAt time.Time `json:"updatedAt"`
+	// last change to the content or name (not to its collection)
+	UpdatedAt          time.Time  `json:"updatedAt"`
+	ThumbnailUpdatedAt *time.Time `json:"thumbnailUpdatedAt"`
 }
 
 type Board struct {
@@ -44,89 +62,178 @@ type File struct {
 	Version  int32  `json:"version"`
 }
 
+type Thumbnail struct {
+	MimeType  string
+	Data      []byte
+	UpdatedAt time.Time
+}
+
+// Update is a partial board update. A nil field is left unchanged; to move a
+// board to "unsorted" set MoveToCollection with a nil CollectionID.
+type Update struct {
+	Name             *string
+	MoveToCollection bool
+	CollectionID     *string
+}
+
 var emptyScene = json.RawMessage(`{"elements":[],"appState":{}}`)
 
-type Permission int
-
-const (
-	PermRead Permission = iota
-	PermWrite
-)
-
 type Store struct {
-	pool *pgxpool.Pool
+	pool   *pgxpool.Pool
+	access *access.Checker
 }
 
-func NewStore(pool *pgxpool.Pool) *Store {
-	return &Store{pool: pool}
+func NewStore(pool *pgxpool.Pool, checker *access.Checker) *Store {
+	return &Store{pool: pool, access: checker}
 }
 
-// authorize is the single access-control decision for boards. Today only the
-// owner has access, for any permission; board sharing will extend this
-// function (e.g. a board_members lookup) without touching callers.
-func (s *Store) authorize(ctx context.Context, userID, boardID string, _ Permission) error {
-	if err := validateBoardID(boardID); err != nil {
-		return ErrNotFound
-	}
-	var ownerID string
-	err := s.pool.QueryRow(ctx, `SELECT owner_id FROM boards WHERE id = $1`, boardID).Scan(&ownerID)
-	if errors.Is(err, pgx.ErrNoRows) || (err == nil && ownerID != userID) {
+// boardAccess maps "no access" to the board-specific not-found error.
+func (s *Store) boardAccess(ctx context.Context, userID, boardID string, perm access.Permission) error {
+	_, err := s.access.Board(ctx, userID, boardID, perm)
+	if errors.Is(err, apperr.ErrNotFound) {
 		return ErrNotFound
 	}
 	return err
 }
 
-func (s *Store) List(ctx context.Context, userID string) ([]Summary, error) {
-	rows, err := s.pool.Query(ctx,
-		`SELECT id, name, created_at, updated_at FROM boards
-		  WHERE owner_id = $1 ORDER BY updated_at DESC`,
-		userID,
-	)
-	if err != nil {
-		return nil, err
+const (
+	summaryColumns = `b.id, b.name, b.workspace_id, b.collection_id, b.created_at, b.updated_at,
+	       u.id, u.name, t.updated_at`
+	boardJoins = `
+	  FROM boards b
+	  LEFT JOIN users u ON u.id = b.created_by
+	  LEFT JOIN board_thumbnails t ON t.board_id = b.id`
+	selectSummary = "SELECT " + summaryColumns + boardJoins
+	selectBoard   = "SELECT " + summaryColumns + ", b.version, b.scene::text" + boardJoins
+)
+
+func scanSummary(row pgx.Row, extra ...any) (Summary, error) {
+	var b Summary
+	var creatorID, creatorName *string
+	dest := append([]any{
+		&b.ID, &b.Name, &b.WorkspaceID, &b.CollectionID, &b.CreatedAt, &b.UpdatedAt,
+		&creatorID, &creatorName, &b.ThumbnailUpdatedAt,
+	}, extra...)
+	if err := row.Scan(dest...); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Summary{}, ErrNotFound
+		}
+		return Summary{}, err
 	}
-	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (Summary, error) {
-		var b Summary
-		err := row.Scan(&b.ID, &b.Name, &b.CreatedAt, &b.UpdatedAt)
-		return b, err
-	})
+	if creatorID != nil {
+		b.CreatedBy = &UserRef{ID: *creatorID, Name: *creatorName}
+	}
+	return b, nil
 }
 
-func (s *Store) Create(ctx context.Context, userID, name string) (Board, error) {
+// List returns one page of a workspace's boards, most recently updated first,
+// and the cursor of the next page ("" when there is none).
+func (s *Store) List(ctx context.Context, userID, workspaceID string, filter CollectionFilter, limit int, after *cursor) ([]Summary, string, error) {
+	if _, err := s.access.Workspace(ctx, userID, workspaceID, access.Read); err != nil {
+		return nil, "", err
+	}
+	if limit <= 0 || limit > maxPageSize {
+		limit = defaultPageSize
+	}
+
+	conditions := []string{"b.workspace_id = $1"}
+	args := []any{workspaceID}
+	arg := func(v any) string {
+		args = append(args, v)
+		return fmt.Sprintf("$%d", len(args))
+	}
+	switch {
+	case filter.Unsorted:
+		conditions = append(conditions, "b.collection_id IS NULL")
+	case filter.CollectionID != "":
+		conditions = append(conditions, "b.collection_id = "+arg(filter.CollectionID))
+	}
+	if after != nil {
+		conditions = append(conditions,
+			fmt.Sprintf("(b.updated_at, b.id) < (%s, %s)", arg(after.UpdatedAt), arg(after.ID)))
+	}
+	// one extra row tells whether there is a next page
+	query := selectSummary + " WHERE " + strings.Join(conditions, " AND ") +
+		" ORDER BY b.updated_at DESC, b.id DESC LIMIT " + arg(limit+1)
+
+	rows, err := s.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, "", err
+	}
+	boards, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (Summary, error) {
+		return scanSummary(row)
+	})
+	if err != nil {
+		return nil, "", err
+	}
+
+	next := ""
+	if len(boards) > limit {
+		boards = boards[:limit]
+		last := boards[limit-1]
+		next = cursor{UpdatedAt: last.UpdatedAt, ID: last.ID}.encode()
+	}
+	return boards, next, nil
+}
+
+func (s *Store) Create(ctx context.Context, userID, workspaceID, name string, collectionID *string) (Board, error) {
+	if _, err := s.access.Workspace(ctx, userID, workspaceID, access.Write); err != nil {
+		return Board{}, err
+	}
 	name, err := normalizeName(name, true)
 	if err != nil {
 		return Board{}, err
 	}
-	b := Board{Scene: emptyScene}
+	if collectionID != nil && !access.ValidUUID(*collectionID) {
+		return Board{}, ErrCollectionNotFound
+	}
+
+	// the collection must belong to the same workspace; checked in the same
+	// statement as the insert
+	var id string
 	err = s.pool.QueryRow(ctx,
-		`INSERT INTO boards (owner_id, name, scene) VALUES ($1, $2, $3)
-		 RETURNING id, name, version, created_at, updated_at`,
-		userID, name, string(emptyScene),
-	).Scan(&b.ID, &b.Name, &b.Version, &b.CreatedAt, &b.UpdatedAt)
-	return b, err
+		`INSERT INTO boards (workspace_id, created_by, name, scene, collection_id)
+		 SELECT $1, $2, $3, $4, $5::uuid
+		  WHERE $5::uuid IS NULL
+		     OR EXISTS (SELECT 1 FROM collections c WHERE c.id = $5::uuid AND c.workspace_id = $1)
+		 RETURNING id`,
+		workspaceID, userID, name, string(emptyScene), collectionID,
+	).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Board{}, ErrCollectionNotFound
+	}
+	if err != nil {
+		return Board{}, err
+	}
+	return s.get(ctx, id)
+}
+
+func (s *Store) get(ctx context.Context, boardID string) (Board, error) {
+	var b Board
+	var scene string
+	summary, err := scanSummary(
+		s.pool.QueryRow(ctx, selectBoard+` WHERE b.id = $1`, boardID),
+		&b.Version, &scene,
+	)
+	if err != nil {
+		return Board{}, err
+	}
+	b.Summary = summary
+	b.Scene = json.RawMessage(scene)
+	return b, nil
 }
 
 func (s *Store) Get(ctx context.Context, userID, boardID string) (Board, error) {
-	if err := s.authorize(ctx, userID, boardID, PermRead); err != nil {
+	if err := s.boardAccess(ctx, userID, boardID, access.Read); err != nil {
 		return Board{}, err
 	}
-	var b Board
-	var scene string
-	err := s.pool.QueryRow(ctx,
-		`SELECT id, name, version, scene::text, created_at, updated_at FROM boards WHERE id = $1`,
-		boardID,
-	).Scan(&b.ID, &b.Name, &b.Version, &scene, &b.CreatedAt, &b.UpdatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return Board{}, ErrNotFound
-	}
-	b.Scene = json.RawMessage(scene)
-	return b, err
+	return s.get(ctx, boardID)
 }
 
 // SaveScene stores the scene only if the board is still at expectedVersion
 // and returns the new version. Otherwise it returns *ConflictError.
 func (s *Store) SaveScene(ctx context.Context, userID, boardID string, expectedVersion int64, scene json.RawMessage) (int64, time.Time, error) {
-	if err := s.authorize(ctx, userID, boardID, PermWrite); err != nil {
+	if err := s.boardAccess(ctx, userID, boardID, access.Write); err != nil {
 		return 0, time.Time{}, err
 	}
 	scene, err := normalizeScene(scene)
@@ -156,29 +263,55 @@ func (s *Store) SaveScene(ctx context.Context, userID, boardID string, expectedV
 	return version, updatedAt, err
 }
 
-func (s *Store) Rename(ctx context.Context, userID, boardID, name string) (Summary, error) {
-	if err := s.authorize(ctx, userID, boardID, PermWrite); err != nil {
+// Update renames and/or moves a board. Renaming counts as a modification
+// (bumps updated_at); moving between collections does not.
+func (s *Store) Update(ctx context.Context, userID, boardID string, u Update) (Summary, error) {
+	if err := s.boardAccess(ctx, userID, boardID, access.Write); err != nil {
 		return Summary{}, err
 	}
-	name, err := normalizeName(name, false)
+	if u.Name == nil && !u.MoveToCollection {
+		return Summary{}, apperr.Invalid("nothing to update: send name and/or collectionId")
+	}
+	if u.Name != nil {
+		name, err := normalizeName(*u.Name, false)
+		if err != nil {
+			return Summary{}, err
+		}
+		u.Name = &name
+	}
+	if u.CollectionID != nil && !access.ValidUUID(*u.CollectionID) {
+		return Summary{}, ErrCollectionNotFound
+	}
+
+	// the target collection must belong to the board's own workspace; checked
+	// in the same statement as the update
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE boards SET
+		    name = COALESCE($2, name),
+		    updated_at = CASE WHEN $2::text IS NULL THEN updated_at ELSE now() END,
+		    collection_id = CASE WHEN $3 THEN $4::uuid ELSE collection_id END
+		  WHERE id = $1
+		    AND (NOT $3 OR $4::uuid IS NULL OR EXISTS (
+		          SELECT 1 FROM collections c
+		           WHERE c.id = $4::uuid AND c.workspace_id = boards.workspace_id))`,
+		boardID, u.Name, u.MoveToCollection, u.CollectionID,
+	)
 	if err != nil {
 		return Summary{}, err
 	}
-	var b Summary
-	err = s.pool.QueryRow(ctx,
-		`UPDATE boards SET name = $2, updated_at = now() WHERE id = $1
-		 RETURNING id, name, created_at, updated_at`,
-		boardID, name,
-	).Scan(&b.ID, &b.Name, &b.CreatedAt, &b.UpdatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if tag.RowsAffected() == 0 {
+		if u.MoveToCollection && u.CollectionID != nil {
+			return Summary{}, ErrCollectionNotFound
+		}
 		return Summary{}, ErrNotFound
 	}
-	return b, err
+	return scanSummary(s.pool.QueryRow(ctx, selectSummary+` WHERE b.id = $1`, boardID))
 }
 
-// Delete removes the board; its files go with it via ON DELETE CASCADE.
+// Delete removes the board; its files and thumbnail go with it (ON DELETE
+// CASCADE).
 func (s *Store) Delete(ctx context.Context, userID, boardID string) error {
-	if err := s.authorize(ctx, userID, boardID, PermWrite); err != nil {
+	if err := s.boardAccess(ctx, userID, boardID, access.Write); err != nil {
 		return err
 	}
 	tag, err := s.pool.Exec(ctx, `DELETE FROM boards WHERE id = $1`, boardID)
@@ -191,7 +324,7 @@ func (s *Store) Delete(ctx context.Context, userID, boardID string) error {
 // PutFile stores a file. Re-uploading the same or an older version is a
 // no-op, so retries are safe; a newer version replaces the stored one.
 func (s *Store) PutFile(ctx context.Context, userID, boardID string, f File) error {
-	if err := s.authorize(ctx, userID, boardID, PermWrite); err != nil {
+	if err := s.boardAccess(ctx, userID, boardID, access.Write); err != nil {
 		return err
 	}
 	if err := validateFile(f); err != nil {
@@ -214,11 +347,11 @@ func (s *Store) PutFile(ctx context.Context, userID, boardID string, f File) err
 
 // GetFiles returns the requested files that exist and the ids that do not.
 func (s *Store) GetFiles(ctx context.Context, userID, boardID string, fileIDs []string) ([]File, []string, error) {
-	if err := s.authorize(ctx, userID, boardID, PermRead); err != nil {
+	if err := s.boardAccess(ctx, userID, boardID, access.Read); err != nil {
 		return nil, nil, err
 	}
 	if len(fileIDs) > maxFileIDs {
-		return nil, nil, invalid("at most %d file ids per request", maxFileIDs)
+		return nil, nil, apperr.Invalid("at most %d file ids per request", maxFileIDs)
 	}
 	for _, id := range fileIDs {
 		if err := validateFileID(id); err != nil {
@@ -254,4 +387,45 @@ func (s *Store) GetFiles(ctx context.Context, userID, boardID string, fileIDs []
 		}
 	}
 	return files, missing, nil
+}
+
+func (s *Store) PutThumbnail(ctx context.Context, userID, boardID, mimeType string, data []byte) (time.Time, error) {
+	if err := s.boardAccess(ctx, userID, boardID, access.Write); err != nil {
+		return time.Time{}, err
+	}
+	if err := validateThumbnail(mimeType, data); err != nil {
+		return time.Time{}, err
+	}
+	var updatedAt time.Time
+	err := s.pool.QueryRow(ctx,
+		`INSERT INTO board_thumbnails (board_id, mime_type, data) VALUES ($1, $2, $3)
+		 ON CONFLICT (board_id) DO UPDATE
+		    SET mime_type = EXCLUDED.mime_type, data = EXCLUDED.data, updated_at = now()
+		 RETURNING updated_at`,
+		boardID, mimeType, data,
+	).Scan(&updatedAt)
+	return updatedAt, err
+}
+
+func (s *Store) DeleteThumbnail(ctx context.Context, userID, boardID string) error {
+	if err := s.boardAccess(ctx, userID, boardID, access.Write); err != nil {
+		return err
+	}
+	_, err := s.pool.Exec(ctx, `DELETE FROM board_thumbnails WHERE board_id = $1`, boardID)
+	return err
+}
+
+func (s *Store) GetThumbnail(ctx context.Context, userID, boardID string) (Thumbnail, error) {
+	if err := s.boardAccess(ctx, userID, boardID, access.Read); err != nil {
+		return Thumbnail{}, err
+	}
+	var t Thumbnail
+	err := s.pool.QueryRow(ctx,
+		`SELECT mime_type, data, updated_at FROM board_thumbnails WHERE board_id = $1`,
+		boardID,
+	).Scan(&t.MimeType, &t.Data, &t.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Thumbnail{}, apperr.NotFound("board has no thumbnail")
+	}
+	return t, err
 }

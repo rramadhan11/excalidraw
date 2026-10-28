@@ -3,11 +3,15 @@ package boards
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
+	"mime"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/rramadhan11/excalidraw/excalidraw-server/internal/apperr"
 	"github.com/rramadhan11/excalidraw/excalidraw-server/internal/auth"
 	"github.com/rramadhan11/excalidraw/excalidraw-server/internal/httpx"
 )
@@ -32,14 +36,17 @@ func (h *Handler) Register(mux *http.ServeMux, wrap func(http.Handler) http.Hand
 	route := func(pattern string, fn http.HandlerFunc) {
 		mux.Handle(pattern, wrap(fn))
 	}
-	route("GET /api/boards", h.list)
-	route("POST /api/boards", h.create)
+	route("GET /api/workspaces/{id}/boards", h.list)
+	route("POST /api/workspaces/{id}/boards", h.create)
 	route("GET /api/boards/{id}", h.get)
-	route("PATCH /api/boards/{id}", h.rename)
+	route("PATCH /api/boards/{id}", h.update)
 	route("DELETE /api/boards/{id}", h.delete)
 	route("PUT /api/boards/{id}/scene", h.saveScene)
 	route("GET /api/boards/{id}/files", h.getFiles)
 	route("PUT /api/boards/{id}/files/{fileId}", h.putFile)
+	route("GET /api/boards/{id}/thumbnail", h.getThumbnail)
+	route("PUT /api/boards/{id}/thumbnail", h.putThumbnail)
+	route("DELETE /api/boards/{id}/thumbnail", h.deleteThumbnail)
 }
 
 func userID(r *http.Request) string {
@@ -53,47 +60,60 @@ func boardID(r *http.Request) string {
 	return id
 }
 
-func (h *Handler) writeStoreError(w http.ResponseWriter, err error) {
+func (h *Handler) writeError(w http.ResponseWriter, err error) {
 	var conflict *ConflictError
-	var tooLarge *FileTooLargeError
-	switch {
-	case errors.Is(err, ErrNotFound):
-		httpx.WriteError(w, http.StatusNotFound, "not_found", err.Error())
-	case errors.As(err, &conflict):
+	if errors.As(err, &conflict) {
 		httpx.WriteJSON(w, http.StatusConflict, map[string]any{
 			"error":   map[string]string{"code": "conflict", "message": err.Error()},
 			"version": conflict.CurrentVersion,
 		})
-	case errors.As(err, &tooLarge):
-		httpx.WriteError(w, http.StatusRequestEntityTooLarge, "file_too_large", err.Error())
-	case IsValidationError(err):
-		httpx.WriteError(w, http.StatusBadRequest, "invalid", err.Error())
-	default:
-		h.logger.Error("board store", slog.Any("err", err))
-		httpx.WriteError(w, http.StatusInternalServerError, "internal", "internal server error")
+		return
 	}
+	apperr.Write(w, h.logger, err)
 }
 
 func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
-	boards, err := h.store.List(r.Context(), userID(r))
+	q := r.URL.Query()
+	filter, err := parseCollectionFilter(q.Get("collection"))
 	if err != nil {
-		h.writeStoreError(w, err)
+		h.writeError(w, err)
 		return
 	}
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{"boards": boards})
+	after, err := decodeCursor(q.Get("cursor"))
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	limit := 0
+	if raw := q.Get("limit"); raw != "" {
+		if limit, err = strconv.Atoi(raw); err != nil || limit < 1 || limit > maxPageSize {
+			h.writeError(w, apperr.Invalid("limit must be 1-%d", maxPageSize))
+			return
+		}
+	}
+
+	workspaceID := r.PathValue("id")
+	httpx.AddLogAttrs(r.Context(), slog.String("workspace_id", workspaceID))
+	boards, next, err := h.store.List(r.Context(), userID(r), workspaceID, filter, limit, after)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"boards": boards, "nextCursor": next})
 }
 
 func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name string `json:"name"`
+		Name         string  `json:"name"`
+		CollectionID *string `json:"collectionId"`
 	}
 	if err := httpx.DecodeJSON(w, r, maxSmallBody, &req); err != nil {
 		httpx.WriteDecodeError(w, err)
 		return
 	}
-	board, err := h.store.Create(r.Context(), userID(r), req.Name)
+	board, err := h.store.Create(r.Context(), userID(r), r.PathValue("id"), req.Name, req.CollectionID)
 	if err != nil {
-		h.writeStoreError(w, err)
+		h.writeError(w, err)
 		return
 	}
 	httpx.AddLogAttrs(r.Context(), slog.String("board_id", board.ID))
@@ -103,23 +123,51 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
 	board, err := h.store.Get(r.Context(), userID(r), boardID(r))
 	if err != nil {
-		h.writeStoreError(w, err)
+		h.writeError(w, err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, board)
 }
 
-func (h *Handler) rename(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Name string `json:"name"`
+type updateRequest struct {
+	Name *string `json:"name"`
+	// raw so an absent field can be told apart from null
+	CollectionID json.RawMessage `json:"collectionId"`
+}
+
+// parseUpdate tells an absent collectionId (leave as is) apart from
+// `"collectionId": null` (move to unsorted).
+func parseUpdate(req updateRequest) (Update, error) {
+	u := Update{Name: req.Name}
+	if req.CollectionID == nil {
+		return u, nil
 	}
+	u.MoveToCollection = true
+	if string(req.CollectionID) == "null" {
+		return u, nil
+	}
+	var id string
+	if err := json.Unmarshal(req.CollectionID, &id); err != nil {
+		return Update{}, apperr.Invalid("collectionId must be a string or null")
+	}
+	u.CollectionID = &id
+	return u, nil
+}
+
+func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
+	var req updateRequest
 	if err := httpx.DecodeJSON(w, r, maxSmallBody, &req); err != nil {
 		httpx.WriteDecodeError(w, err)
 		return
 	}
-	board, err := h.store.Rename(r.Context(), userID(r), boardID(r), req.Name)
+	u, err := parseUpdate(req)
 	if err != nil {
-		h.writeStoreError(w, err)
+		h.writeError(w, err)
+		return
+	}
+	board, err := h.store.Update(r.Context(), userID(r), boardID(r), u)
+	if err != nil {
+		h.writeError(w, err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, board)
@@ -127,7 +175,7 @@ func (h *Handler) rename(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) delete(w http.ResponseWriter, r *http.Request) {
 	if err := h.store.Delete(r.Context(), userID(r), boardID(r)); err != nil {
-		h.writeStoreError(w, err)
+		h.writeError(w, err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusNoContent, nil)
@@ -143,12 +191,12 @@ func (h *Handler) saveScene(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Version == nil {
-		httpx.WriteError(w, http.StatusBadRequest, "invalid", "version is required")
+		h.writeError(w, apperr.Invalid("version is required"))
 		return
 	}
 	version, updatedAt, err := h.store.SaveScene(r.Context(), userID(r), boardID(r), *req.Version, req.Scene)
 	if err != nil {
-		h.writeStoreError(w, err)
+		h.writeError(w, err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, struct {
@@ -180,7 +228,7 @@ func (h *Handler) putFile(w http.ResponseWriter, r *http.Request) {
 		f.Version = *req.Version
 	}
 	if err := h.store.PutFile(r.Context(), userID(r), boardID(r), f); err != nil {
-		h.writeStoreError(w, err)
+		h.writeError(w, err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusNoContent, nil)
@@ -193,11 +241,58 @@ func (h *Handler) getFiles(w http.ResponseWriter, r *http.Request) {
 	}
 	files, missing, err := h.store.GetFiles(r.Context(), userID(r), boardID(r), ids)
 	if err != nil {
-		h.writeStoreError(w, err)
+		h.writeError(w, err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"files":      files,
 		"erroredIds": missing,
 	})
+}
+
+// putThumbnail takes the raw image as the body (not JSON).
+func (h *Handler) putThumbnail(w http.ResponseWriter, r *http.Request) {
+	mimeType, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxThumbnailBytes+1))
+	var maxBytesErr *http.MaxBytesError
+	if errors.As(err, &maxBytesErr) {
+		h.writeError(w, apperr.TooLarge("thumbnail exceeds 512 KiB"))
+		return
+	}
+	if err != nil {
+		h.writeError(w, apperr.Invalid("couldn't read thumbnail: %v", err))
+		return
+	}
+	updatedAt, err := h.store.PutThumbnail(r.Context(), userID(r), boardID(r), mimeType, data)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"thumbnailUpdatedAt": updatedAt})
+}
+
+func (h *Handler) deleteThumbnail(w http.ResponseWriter, r *http.Request) {
+	if err := h.store.DeleteThumbnail(r.Context(), userID(r), boardID(r)); err != nil {
+		h.writeError(w, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusNoContent, nil)
+}
+
+func (h *Handler) getThumbnail(w http.ResponseWriter, r *http.Request) {
+	t, err := h.store.GetThumbnail(r.Context(), userID(r), boardID(r))
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	header := w.Header()
+	header.Set("Content-Type", t.MimeType)
+	header.Set("Content-Length", strconv.Itoa(len(t.Data)))
+	header.Set("X-Content-Type-Options", "nosniff")
+	header.Set("Content-Security-Policy", "default-src 'none'")
+	// clients request ?v=<thumbnailUpdatedAt>, so a URL never changes content
+	header.Set("Cache-Control", "private, max-age=31536000, immutable")
+	header.Set("Last-Modified", t.UpdatedAt.UTC().Format(http.TimeFormat))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(t.Data)
 }
