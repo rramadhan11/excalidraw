@@ -46,6 +46,14 @@ export const Dashboard = ({
   // bumped after any change, so every list reloads
   const [reloadKey, setReloadKey] = useState(0);
   const reload = useCallback(() => setReloadKey((key) => key + 1), []);
+  // a new collection is opened right away, before the reload brings it in
+  const addCollection = useCallback(
+    (created: Collection) => {
+      setCollections((list) => [...(list ?? []), created]);
+      reload();
+    },
+    [reload],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -184,6 +192,7 @@ export const Dashboard = ({
           boardCount={currentWorkspace?.boardCount}
           active={collection}
           onChanged={reload}
+          onCreated={addCollection}
           onError={setError}
         />
         <div className="boards-dashboard__user">

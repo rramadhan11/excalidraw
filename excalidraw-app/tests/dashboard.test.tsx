@@ -176,6 +176,8 @@ describe("boards mode: dashboard", () => {
 
     const board = [...server.boards.values()][0];
     board.collectionId = ideas.id;
+    // listed as soon as it is created, not only after the next reload
+    expect(screen.getByRole("button", { name: "Ideas options" })).toBeTruthy();
 
     openMenu("Ideas options");
     fireEvent.click(screen.getByRole("menuitem", { name: /Delete/ }));

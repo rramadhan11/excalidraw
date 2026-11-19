@@ -148,6 +148,7 @@ export const CollectionsNav = ({
   boardCount,
   active,
   onChanged,
+  onCreated,
   onError,
 }: {
   workspaceId: string;
@@ -155,6 +156,7 @@ export const CollectionsNav = ({
   boardCount: number | undefined;
   active: CollectionFilter;
   onChanged: () => void;
+  onCreated: (collection: Collection) => void;
   onError: (message: string) => void;
 }) => {
   const [creating, setCreating] = useState(false);
@@ -163,7 +165,7 @@ export const CollectionsNav = ({
     setCreating(false);
     try {
       const collection = await boardsApi.createCollection(workspaceId, name);
-      onChanged();
+      onCreated(collection);
       await goTo(workspaceId, collection.id);
     } catch (error: any) {
       onError(error.message);
