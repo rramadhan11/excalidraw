@@ -159,7 +159,9 @@ type CollectionFilter struct {
 	CollectionID string
 }
 
-func parseCollectionFilter(raw string) (CollectionFilter, error) {
+// ParseCollectionFilter parses the collection query value: "" for all boards,
+// "unsorted", or a collection id.
+func ParseCollectionFilter(raw string) (CollectionFilter, error) {
 	switch {
 	case raw == "":
 		return CollectionFilter{}, nil
@@ -172,19 +174,20 @@ func parseCollectionFilter(raw string) (CollectionFilter, error) {
 	}
 }
 
-// cursor is the keyset position after the last board of a page, in the
+// Cursor is the keyset position after the last board of a page, in the
 // listing order (updated_at DESC, id DESC). It is opaque to clients.
-type cursor struct {
+type Cursor struct {
 	UpdatedAt time.Time
 	ID        string
 }
 
-func (c cursor) encode() string {
+func (c Cursor) encode() string {
 	return base64.RawURLEncoding.EncodeToString(
 		[]byte(c.UpdatedAt.UTC().Format(time.RFC3339Nano) + "|" + c.ID))
 }
 
-func decodeCursor(raw string) (*cursor, error) {
+// DecodeCursor parses a nextCursor from a previous page; "" means the first.
+func DecodeCursor(raw string) (*Cursor, error) {
 	if raw == "" {
 		return nil, nil
 	}
@@ -200,5 +203,5 @@ func decodeCursor(raw string) (*cursor, error) {
 	if err != nil {
 		return nil, apperr.Invalid("invalid cursor")
 	}
-	return &cursor{UpdatedAt: updatedAt, ID: id}, nil
+	return &Cursor{UpdatedAt: updatedAt, ID: id}, nil
 }

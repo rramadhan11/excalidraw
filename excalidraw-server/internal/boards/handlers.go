@@ -74,12 +74,12 @@ func (h *Handler) writeError(w http.ResponseWriter, err error) {
 
 func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	filter, err := parseCollectionFilter(q.Get("collection"))
+	filter, err := ParseCollectionFilter(q.Get("collection"))
 	if err != nil {
 		h.writeError(w, err)
 		return
 	}
-	after, err := decodeCursor(q.Get("cursor"))
+	after, err := DecodeCursor(q.Get("cursor"))
 	if err != nil {
 		h.writeError(w, err)
 		return

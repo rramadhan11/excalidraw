@@ -128,7 +128,7 @@ func scanSummary(row pgx.Row, extra ...any) (Summary, error) {
 
 // List returns one page of a workspace's boards, most recently updated first,
 // and the cursor of the next page ("" when there is none).
-func (s *Store) List(ctx context.Context, userID, workspaceID string, filter CollectionFilter, limit int, after *cursor) ([]Summary, string, error) {
+func (s *Store) List(ctx context.Context, userID, workspaceID string, filter CollectionFilter, limit int, after *Cursor) ([]Summary, string, error) {
 	if _, err := s.access.Workspace(ctx, userID, workspaceID, access.Read); err != nil {
 		return nil, "", err
 	}
@@ -171,7 +171,7 @@ func (s *Store) List(ctx context.Context, userID, workspaceID string, filter Col
 	if len(boards) > limit {
 		boards = boards[:limit]
 		last := boards[limit-1]
-		next = cursor{UpdatedAt: last.UpdatedAt, ID: last.ID}.encode()
+		next = Cursor{UpdatedAt: last.UpdatedAt, ID: last.ID}.encode()
 	}
 	return boards, next, nil
 }
@@ -221,6 +221,70 @@ func (s *Store) get(ctx context.Context, boardID string) (Board, error) {
 	b.Summary = summary
 	b.Scene = json.RawMessage(scene)
 	return b, nil
+}
+
+// SearchResult is a board matching a search, with the board text that
+// matched (empty when only the name did).
+type SearchResult struct {
+	Summary
+	Match string `json:"match,omitempty"`
+}
+
+const (
+	maxSearchResults  = 20
+	maxSearchQueryLen = 200
+)
+
+// Search finds boards whose name, or the text of a live element (text
+// content or frame name), contains query, case-insensitively. It covers the
+// workspaces the user is a member of, or just workspaceID when given. Name
+// matches come first, then the most recently updated.
+//
+// Board sharing will have to add shared boards here as well as in
+// access.Board.
+func (s *Store) Search(ctx context.Context, userID, query, workspaceID string) ([]SearchResult, error) {
+	query = strings.TrimSpace(query)
+	if query == "" || len([]rune(query)) > maxSearchQueryLen {
+		return nil, apperr.Invalid("query must be 1-%d characters", maxSearchQueryLen)
+	}
+	if workspaceID != "" {
+		if _, err := s.access.Workspace(ctx, userID, workspaceID, access.Read); err != nil {
+			return nil, err
+		}
+	}
+	// match the query literally: % and _ are LIKE wildcards
+	pattern := "%" + strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(query) + "%"
+
+	rows, err := s.pool.Query(ctx,
+		"SELECT "+summaryColumns+`, m.text`+boardJoins+`
+		  LEFT JOIN LATERAL (
+		        SELECT CASE WHEN e->>'text' ILIKE $2 THEN e->>'text' ELSE e->>'name' END AS text
+		          FROM json_array_elements(b.scene->'elements') e
+		         WHERE coalesce(e->>'isDeleted', 'false') <> 'true'
+		           AND (e->>'text' ILIKE $2 OR e->>'name' ILIKE $2)
+		         LIMIT 1) m ON true
+		  WHERE b.workspace_id IN (SELECT workspace_id FROM workspace_members WHERE user_id = $1)
+		    AND ($3 = '' OR b.workspace_id::text = $3)
+		    AND (b.name ILIKE $2 OR m.text IS NOT NULL)
+		  ORDER BY (b.name ILIKE $2) DESC, b.updated_at DESC, b.id DESC
+		  LIMIT $4`,
+		userID, pattern, workspaceID, maxSearchResults,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (SearchResult, error) {
+		var match *string
+		summary, err := scanSummary(row, &match)
+		if err != nil {
+			return SearchResult{}, err
+		}
+		result := SearchResult{Summary: summary}
+		if match != nil {
+			result.Match = *match
+		}
+		return result, nil
+	})
 }
 
 func (s *Store) Get(ctx context.Context, userID, boardID string) (Board, error) {

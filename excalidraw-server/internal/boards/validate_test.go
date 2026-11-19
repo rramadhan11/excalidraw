@@ -134,39 +134,39 @@ func TestValidateThumbnail(t *testing.T) {
 }
 
 func TestCursorRoundTrip(t *testing.T) {
-	c := cursor{
+	c := Cursor{
 		UpdatedAt: time.Date(2026, 10, 28, 10, 11, 12, 123456000, time.UTC),
 		ID:        "11111111-1111-4111-8111-111111111111",
 	}
-	got, err := decodeCursor(c.encode())
+	got, err := DecodeCursor(c.encode())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !got.UpdatedAt.Equal(c.UpdatedAt) || got.ID != c.ID {
 		t.Fatalf("got %+v, want %+v", got, c)
 	}
-	if got, err := decodeCursor(""); got != nil || err != nil {
+	if got, err := DecodeCursor(""); got != nil || err != nil {
 		t.Fatalf("empty cursor: %v %v", got, err)
 	}
 	for _, bad := range []string{"%%%", "bm9waXBl", "MjAyNnxub3QtYS11dWlk"} {
-		if _, err := decodeCursor(bad); !isInvalid(err) {
+		if _, err := DecodeCursor(bad); !isInvalid(err) {
 			t.Errorf("%q: want 400, got %v", bad, err)
 		}
 	}
 }
 
 func TestParseCollectionFilter(t *testing.T) {
-	if f, _ := parseCollectionFilter(""); f != (CollectionFilter{}) {
+	if f, _ := ParseCollectionFilter(""); f != (CollectionFilter{}) {
 		t.Fatalf("empty: %+v", f)
 	}
-	if f, _ := parseCollectionFilter("unsorted"); !f.Unsorted {
+	if f, _ := ParseCollectionFilter("unsorted"); !f.Unsorted {
 		t.Fatalf("unsorted: %+v", f)
 	}
 	id := "11111111-1111-4111-8111-111111111111"
-	if f, _ := parseCollectionFilter(id); f.CollectionID != id {
+	if f, _ := ParseCollectionFilter(id); f.CollectionID != id {
 		t.Fatalf("id: %+v", f)
 	}
-	if _, err := parseCollectionFilter("drop table"); !isInvalid(err) {
+	if _, err := ParseCollectionFilter("drop table"); !isInvalid(err) {
 		t.Fatalf("want 400, got %v", err)
 	}
 }

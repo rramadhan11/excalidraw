@@ -5,10 +5,15 @@
 //	excalidraw-server user create --email a@b.c --name "Name"
 //	excalidraw-server user passwd --email a@b.c
 //	excalidraw-server user list
+//	excalidraw-server token create --email a@b.c --name "laptop" [--expires-days 90]
+//	excalidraw-server token list --email a@b.c
+//	excalidraw-server token revoke --id TOKEN_ID
 //	excalidraw-server healthcheck
 //
 // Passwords are read from the terminal (or a single line of stdin when piped),
-// never from arguments, so they don't end up in shell history.
+// never from arguments, so they don't end up in shell history. API tokens are
+// printed once, alone on stdout, so they can be piped straight into a secret
+// store.
 package main
 
 import (
@@ -27,6 +32,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/term"
 
 	"github.com/rramadhan11/excalidraw/excalidraw-server/internal/auth"
@@ -40,6 +46,9 @@ const usage = `usage:
   excalidraw-server user create --email EMAIL --name NAME
   excalidraw-server user passwd --email EMAIL
   excalidraw-server user list
+  excalidraw-server token create --email EMAIL --name NAME [--expires-days DAYS]
+  excalidraw-server token list --email EMAIL
+  excalidraw-server token revoke --id TOKEN_ID
   excalidraw-server healthcheck
 
 environment:
@@ -48,6 +57,7 @@ environment:
   COOKIE_SECURE        default "true"; set "false" only for local http dev
   TRUST_PROXY_HEADERS  default "false"; "true" behind nginx to read X-Real-IP
   LOG_LEVEL            debug|info|warn|error, default "info"
+  PUBLIC_URL           app origin for board links in MCP results, e.g. https://draw.example.com
 `
 
 func main() {
@@ -67,6 +77,8 @@ func run(args []string) error {
 		return serve()
 	case "user":
 		return userCommand(args[1:])
+	case "token":
+		return tokenCommand(args[1:])
 	case "healthcheck":
 		return healthcheck()
 	default:
@@ -150,9 +162,14 @@ func serve() error {
 
 	go cleanupSessions(ctx, auth.NewSessions(pool), logger)
 
+	cfg := server.Config{
+		CookieSecure: cookieSecure,
+		TrustProxy:   trustProxy,
+		PublicURL:    os.Getenv("PUBLIC_URL"),
+	}
 	srv := &http.Server{
 		Addr:              envOr("LISTEN_ADDR", ":8080"),
-		Handler:           server.NewHandler(pool, server.Config{CookieSecure: cookieSecure, TrustProxy: trustProxy}, logger),
+		Handler:           server.NewHandler(pool, cfg, logger),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       2 * time.Minute,
 		WriteTimeout:      2 * time.Minute,
@@ -210,6 +227,19 @@ func healthcheck() error {
 	return nil
 }
 
+// openMigrated connects for an admin command, applying pending migrations
+// first so commands work right after an upgrade.
+func openMigrated(ctx context.Context) (*pgxpool.Pool, error) {
+	dbURL, err := databaseURL()
+	if err != nil {
+		return nil, err
+	}
+	if _, err := db.Migrate(ctx, dbURL); err != nil {
+		return nil, err
+	}
+	return db.Open(ctx, dbURL)
+}
+
 func userCommand(args []string) error {
 	if len(args) == 0 {
 		fmt.Fprint(os.Stderr, usage)
@@ -222,15 +252,8 @@ func userCommand(args []string) error {
 		return err
 	}
 
-	dbURL, err := databaseURL()
-	if err != nil {
-		return err
-	}
 	ctx := context.Background()
-	if _, err := db.Migrate(ctx, dbURL); err != nil {
-		return err
-	}
-	pool, err := db.Open(ctx, dbURL)
+	pool, err := openMigrated(ctx)
 	if err != nil {
 		return err
 	}
@@ -283,6 +306,98 @@ func userCommand(args []string) error {
 		fmt.Fprint(os.Stderr, usage)
 		return fmt.Errorf("unknown user subcommand %q", args[0])
 	}
+}
+
+func tokenCommand(args []string) error {
+	if len(args) == 0 {
+		fmt.Fprint(os.Stderr, usage)
+		return errors.New("missing token subcommand")
+	}
+	fs := flag.NewFlagSet("token "+args[0], flag.ContinueOnError)
+	email := fs.String("email", "", "user email")
+	name := fs.String("name", "", "what the token is for, e.g. the client or machine")
+	expiresDays := fs.Int("expires-days", 0, "days until the token expires (0: until revoked)")
+	id := fs.String("id", "", "token id, from token list")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+
+	ctx := context.Background()
+	pool, err := openMigrated(ctx)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+	tokens := auth.NewTokens(pool)
+
+	switch args[0] {
+	case "create":
+		if *email == "" || *name == "" {
+			return errors.New("--email and --name are required")
+		}
+		if *expiresDays < 0 || *expiresDays > 3650 {
+			return errors.New("--expires-days must be 0-3650")
+		}
+		var expiresAt *time.Time
+		if *expiresDays > 0 {
+			t := time.Now().AddDate(0, 0, *expiresDays)
+			expiresAt = &t
+		}
+		token, raw, err := tokens.Create(ctx, *email, *name, expiresAt)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "created token %q (%s) for %s; it is shown only once:\n", token.Name, token.ID, auth.NormalizeEmail(*email))
+		fmt.Println(raw)
+		return nil
+
+	case "list":
+		if *email == "" {
+			return errors.New("--email is required")
+		}
+		list, err := tokens.List(ctx, *email)
+		if err != nil {
+			return err
+		}
+		tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+		fmt.Fprintln(tw, "ID\tNAME\tCREATED\tLAST USED\tEXPIRES\tSTATUS")
+		for _, t := range list {
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", t.ID, t.Name, t.CreatedAt.Format(time.DateOnly),
+				dateOr(t.LastUsedAt, "never"), dateOr(t.ExpiresAt, "never"), tokenStatus(t))
+		}
+		return tw.Flush()
+
+	case "revoke":
+		if *id == "" {
+			return errors.New("--id is required")
+		}
+		if err := tokens.Revoke(ctx, *id); err != nil {
+			return err
+		}
+		fmt.Println("token revoked")
+		return nil
+
+	default:
+		fmt.Fprint(os.Stderr, usage)
+		return fmt.Errorf("unknown token subcommand %q", args[0])
+	}
+}
+
+func dateOr(t *time.Time, fallback string) string {
+	if t == nil {
+		return fallback
+	}
+	return t.Format(time.DateOnly)
+}
+
+func tokenStatus(t auth.APIToken) string {
+	switch {
+	case t.RevokedAt != nil:
+		return "revoked"
+	case t.ExpiresAt != nil && t.ExpiresAt.Before(time.Now()):
+		return "expired"
+	}
+	return "active"
 }
 
 // readPassword prompts twice on a terminal, or reads one line from piped stdin.

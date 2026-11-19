@@ -50,6 +50,7 @@ cd ~/excalidraw/deploy
 cp .env.example .env && chmod 600 .env
 sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$(openssl rand -hex 24)/" .env
 sed -i "s/^CADDY_NETWORK=.*/CADDY_NETWORK=medic-quickcomm_default/" .env
+sed -i "s|^PUBLIC_URL=.*|PUBLIC_URL=https://draw.gemps.my.id|" .env
 cat .env
 ```
 
@@ -131,6 +132,48 @@ Catatan:
 - Kalau project `medic-quickcomm` di-`docker compose down`, network-nya ikut dihapus. Selama container `web` masih menempel, perintah itu akan gagal. Jalankan `docker compose down` di excalidraw dulu.
 - Setelah masa review selesai, sebaiknya Caddy dipindah ke compose sendiri (misalnya `~/edge`) sebagai reverse proxy bersama untuk semua subdomain, supaya tidak menumpang project assessment lagi.
 
+## 6. MCP: akses dari AI tools (Claude Code, Codex, dll.)
+
+Endpoint-nya `https://draw.gemps.my.id/api/mcp`, dan aksesnya pakai **token pribadi** per user. Token punya akses penuh seperti user pemiliknya, jadi perlakukan seperti password.
+
+Buat token **(di VPS)**. Token hanya ditampilkan sekali, jadi langsung simpan di password manager:
+
+```bash
+cd ~/excalidraw/deploy
+docker compose exec server excalidraw-server token create --email kamu@example.com --name "claude-code-mac" --expires-days 365
+docker compose exec server excalidraw-server token list --email kamu@example.com
+docker compose exec server excalidraw-server token revoke --id <TOKEN_ID>    # langsung tidak berlaku
+```
+
+Pasang di client **(di Mac)**:
+
+- **Claude Code** menyimpan header-nya, termasuk token, di config-nya sendiri (`~/.claude.json`), jadi file itu ikut menjadi rahasia.
+- **Codex** membaca token dari env var setiap kali jalan, sehingga token tidak tersimpan di config.
+
+```bash
+export EXCALIDRAW_TOKEN='exa_...'     # dari password manager; untuk Codex taruh di ~/.zshrc
+claude mcp add --transport http excalidraw https://draw.gemps.my.id/api/mcp \
+  --header "Authorization: Bearer $EXCALIDRAW_TOKEN"
+```
+
+```toml
+# Codex: ~/.codex/config.toml
+[mcp_servers.excalidraw]
+url = "https://draw.gemps.my.id/api/mcp"
+bearer_token_env_var = "EXCALIDRAW_TOKEN"
+```
+
+Cek cepat dari terminal (harus `200`):
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' -X POST https://draw.gemps.my.id/api/mcp \
+  -H "Authorization: Bearer $EXCALIDRAW_TOKEN" -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
+
+Lewat MCP, AI bisa membaca, mencari, mengatur, dan menggambar di board, tapi **tidak bisa menghapus board, collection, atau workspace**. Kalau board sedang terbuka di browser saat AI mengubahnya, autosave di tab itu berhenti dengan pesan "Changed elsewhere — reload". Reload tab-nya untuk melihat hasilnya.
+
 ---
 
 ## Backup — (di VPS)
@@ -195,3 +238,5 @@ Hapus blok `draw.gemps.my.id` dari Caddyfile (edit di tempat), lalu validate dan
 | Login berhasil tapi langsung keluar lagi | Situs harus dibuka lewat **https**, karena cookie login di-set `Secure` |
 | Sertifikat belum terbit | `docker logs medic-quickcomm-caddy-1`. DNS harus mengarah ke VPS dan port 80/443 terbuka |
 | Upload gambar besar gagal | Batas per gambar 4 MiB, sama dengan batas Excalidraw |
+| MCP membalas 401 | Token salah, sudah di-revoke, atau expired: cek `token list`. Header harus `Authorization: Bearer exa_...` |
+| Link board dari MCP tidak lengkap (`/board/...`) | `PUBLIC_URL` di `deploy/.env` belum diisi; isi lalu `up -d` lagi |

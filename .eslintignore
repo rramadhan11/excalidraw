@@ -9,3 +9,5 @@ packages/excalidraw/types
 examples/**/public
 dev-dist
 coverage
+# written by `go test ./internal/scene -update` in excalidraw-server; compared byte for byte
+excalidraw-app/tests/fixtures/mcp-scene.json

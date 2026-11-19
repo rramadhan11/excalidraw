@@ -1,6 +1,6 @@
 # excalidraw-server
 
-Board storage API for self-hosted `excalidraw-app`: user accounts (session cookies), boards (scene JSON) and image files, stored in Postgres. See [`deploy/BOARDS_PLAN.md`](../deploy/BOARDS_PLAN.md) for the design.
+Board storage API for self-hosted `excalidraw-app`: user accounts (session cookies), boards (scene JSON) and image files, stored in Postgres, plus an [MCP endpoint](#mcp) for AI tools. See [`deploy/BOARDS_PLAN.md`](../deploy/BOARDS_PLAN.md), [`deploy/WORKSPACE_PLAN.md`](../deploy/WORKSPACE_PLAN.md) and [`deploy/MCP_PLAN_v2.md`](../deploy/MCP_PLAN_v2.md) for the design.
 
 ## Commands
 
@@ -9,6 +9,9 @@ excalidraw-server serve                                   # run the API (applies
 excalidraw-server user create --email a@b.c --name Name   # prompts for the password
 excalidraw-server user passwd --email a@b.c               # also signs out all sessions
 excalidraw-server user list
+excalidraw-server token create --email a@b.c --name laptop [--expires-days 90]   # prints the token once
+excalidraw-server token list --email a@b.c
+excalidraw-server token revoke --id TOKEN_ID
 excalidraw-server healthcheck                             # used by the Docker HEALTHCHECK
 ```
 
@@ -21,6 +24,7 @@ There is no public sign-up; accounts are created with `user create`. When stdin 
 | `COOKIE_SECURE` | `true` | `false` only for local http development |
 | `TRUST_PROXY_HEADERS` | `false` | `true` behind nginx so rate limiting uses `X-Real-IP` |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
+| `PUBLIC_URL` | (empty) | app origin, e.g. `https://draw.example.com`, for board links in MCP results; links are relative without it |
 
 ## Data model
 
@@ -55,6 +59,36 @@ Every request that changes state must send `X-Requested-With: excalidraw` (CSRF 
 | `GET` / `DELETE /api/boards/{id}/thumbnail` | served immutable; request it with `?v=<thumbnailUpdatedAt>` |
 
 A board summary is `{id, name, workspaceId, collectionId, createdBy: {id, name} | null, createdAt, updatedAt, thumbnailUpdatedAt}`.
+
+## MCP
+
+`/api/mcp` is a [Model Context Protocol](https://modelcontextprotocol.io) server (streamable HTTP, stateless, JSON responses) so AI tools can read, organise and draw on boards as you. It accepts only `Authorization: Bearer <token>` with a personal access token from `token create`; session cookies are ignored, so it needs no CSRF header. A token has its user's full access; revoke it with `token revoke` (effective immediately).
+
+| Tool |  |
+| --- | --- |
+| `list_workspaces`, `list_collections`, `list_boards` | browse; boards come with their `url` |
+| `search_boards` | board names and text on boards (labels, text, frame names), up to 20 |
+| `get_board` | compact element summary with content bounds, or `detail: "full"` for raw elements |
+| `create_board`, `rename_board`, `move_board`, `create_collection`, `rename_collection` | organise |
+| `add_elements` | draw from simplified element skeletons (shapes with labels, text, arrows bound by `start`/`end` id, lines, frames) |
+| `update_elements` | move, resize, recolor, relabel; labels and attached arrows follow |
+| `delete_elements` | soft-delete (`isDeleted`), labels and frame contents included |
+
+Boards, collections and workspaces cannot be deleted over MCP. Drawing tools retry on a concurrent save (optimistic version) and drop the board's thumbnail, which the editor re-renders the next time the board is opened. A board open in a browser while a tool edits it stops autosaving with "Changed elsewhere — reload".
+
+Elements are built in Go (`internal/scene`) to match the editor's own constructors; `excalidraw-app/tests/mcpScene.test.ts` loads `internal/scene`'s golden fixture through the editor's `restoreElements` and fails if anything would need repairing. After changing the builder, run `go test ./internal/scene -update` and that test.
+
+```sh
+# Claude Code
+claude mcp add --transport http excalidraw https://draw.example.com/api/mcp --header "Authorization: Bearer $EXCALIDRAW_TOKEN"
+```
+
+```toml
+# Codex (~/.codex/config.toml)
+[mcp_servers.excalidraw]
+url = "https://draw.example.com/api/mcp"
+bearer_token_env_var = "EXCALIDRAW_TOKEN"
+```
 
 ## Development
 

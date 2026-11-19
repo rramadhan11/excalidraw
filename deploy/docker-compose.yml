@@ -35,6 +35,8 @@ services:
       COOKIE_SECURE: "true"
       TRUST_PROXY_HEADERS: "true"
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      # board links in MCP results
+      PUBLIC_URL: ${PUBLIC_URL:-}
     networks:
       - internal
     # small Go service; caps keep it from ever crowding out other apps

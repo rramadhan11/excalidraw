@@ -14,6 +14,7 @@ import (
 	"github.com/rramadhan11/excalidraw/excalidraw-server/internal/boards"
 	"github.com/rramadhan11/excalidraw/excalidraw-server/internal/collections"
 	"github.com/rramadhan11/excalidraw/excalidraw-server/internal/httpx"
+	"github.com/rramadhan11/excalidraw/excalidraw-server/internal/mcpserver"
 	"github.com/rramadhan11/excalidraw/excalidraw-server/internal/workspaces"
 )
 
@@ -22,6 +23,8 @@ type Config struct {
 	CookieSecure bool
 	// TrustProxy honours X-Real-IP from the reverse proxy for rate limiting.
 	TrustProxy bool
+	// PublicURL is the app's origin, used for board links in MCP results.
+	PublicURL string
 }
 
 func NewHandler(pool *pgxpool.Pool, cfg Config, logger *slog.Logger) http.Handler {
@@ -32,9 +35,12 @@ func NewHandler(pool *pgxpool.Pool, cfg Config, logger *slog.Logger) http.Handle
 		logger,
 	)
 	checker := access.NewChecker(pool)
-	boardsHandler := boards.NewHandler(boards.NewStore(pool, checker), logger)
-	collectionsHandler := collections.NewHandler(collections.NewStore(pool, checker), logger)
-	workspacesHandler := workspaces.NewHandler(workspaces.NewStore(pool, checker), logger)
+	boardStore := boards.NewStore(pool, checker)
+	collectionStore := collections.NewStore(pool, checker)
+	workspaceStore := workspaces.NewStore(pool, checker)
+	boardsHandler := boards.NewHandler(boardStore, logger)
+	collectionsHandler := collections.NewHandler(collectionStore, logger)
+	workspacesHandler := workspaces.NewHandler(workspaceStore, logger)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -53,5 +59,19 @@ func NewHandler(pool *pgxpool.Pool, cfg Config, logger *slog.Logger) http.Handle
 	collectionsHandler.Register(mux, authHandler.RequireUser)
 	boardsHandler.Register(mux, authHandler.RequireUser)
 
-	return httpx.Logger(logger)(httpx.RequireCSRFHeader(mux))
+	// The MCP endpoint authenticates with bearer tokens only, which browsers
+	// never attach on their own, so it sits outside the CSRF check that the
+	// cookie-authenticated API needs.
+	root := http.NewServeMux()
+	root.Handle("/api/mcp", mcpserver.Handler(mcpserver.Deps{
+		Tokens:      auth.NewTokens(pool),
+		Workspaces:  workspaceStore,
+		Collections: collectionStore,
+		Boards:      boardStore,
+		PublicURL:   cfg.PublicURL,
+		Logger:      logger,
+	}))
+	root.Handle("/", httpx.RequireCSRFHeader(mux))
+
+	return httpx.Logger(logger)(root)
 }
