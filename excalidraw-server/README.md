@@ -39,6 +39,9 @@ Every request that changes state must send `X-Requested-With: excalidraw` (CSRF 
 | `POST /api/auth/login` `{email, password}` | sets the session cookie |
 | `POST /api/auth/logout` |  |
 | `GET /api/auth/me` |  |
+| `GET /api/tokens` | `{tokens: [{id, name, createdAt, lastUsedAt, expiresAt, revokedAt}]}`, your API tokens including revoked ones |
+| `POST /api/tokens` `{name, password, expiresInDays?}` | 201 `{token, secret}`; `secret` is shown only here. `expiresInDays`: 30, 90 (default), 365 or `null` (never). Wrong password: 403 `invalid_password`, rate limited like login. 409 `too_many_tokens` beyond 20 active |
+| `DELETE /api/tokens/{id}` | revokes one of your tokens, effective immediately; 404 for anyone else's |
 | `GET /api/workspaces` | `{workspaces: [{id, name, role, boardCount}]}` |
 | `POST /api/workspaces` `{name}` | you become its owner |
 | `PATCH /api/workspaces/{id}` `{name}` | owner only |
@@ -62,7 +65,7 @@ A board summary is `{id, name, workspaceId, collectionId, createdBy: {id, name} 
 
 ## MCP
 
-`/api/mcp` is a [Model Context Protocol](https://modelcontextprotocol.io) server (streamable HTTP, stateless, JSON responses) so AI tools can read, organise and draw on boards as you. It accepts only `Authorization: Bearer <token>` with a personal access token from `token create`; session cookies are ignored, so it needs no CSRF header. A token has its user's full access; revoke it with `token revoke` (effective immediately).
+`/api/mcp` is a [Model Context Protocol](https://modelcontextprotocol.io) server (streamable HTTP, stateless, JSON responses) so AI tools can read, organise and draw on boards as you. It accepts only `Authorization: Bearer <token>` with a personal access token, created by its user in the dashboard ("Connect AI tools", or `POST /api/tokens`) or by an admin with `token create`; session cookies are ignored, so it needs no CSRF header. A token has its user's full access; revoke it in the dashboard, with `DELETE /api/tokens/{id}` or `token revoke` (effective immediately).
 
 | Tool |  |
 | --- | --- |

@@ -309,3 +309,42 @@ export const thumbnailsApi = {
         )}/thumbnail?v=${encodeURIComponent(board.thumbnailUpdatedAt)}`
       : null,
 };
+
+// API tokens (for MCP clients) -------------------------------------------------
+
+export type ApiToken = {
+  id: string;
+  name: string;
+  createdAt: string;
+  lastUsedAt: string | null;
+  /** null: never expires */
+  expiresAt: string | null;
+  revokedAt: string | null;
+};
+
+/** the lifetimes the server accepts; null never expires */
+export type TokenLifetimeDays = 30 | 90 | 365 | null;
+
+export const tokensApi = {
+  list: () =>
+    request<{ tokens: ApiToken[] }>("GET", "/tokens").then((res) => res.tokens),
+
+  /** `secret` is returned only here; the server keeps just its hash */
+  create: (input: {
+    name: string;
+    expiresInDays: TokenLifetimeDays;
+    password: string;
+  }) =>
+    request<{ token: ApiToken; secret: string }>(
+      "POST",
+      "/tokens",
+      JSON.stringify(input),
+    ),
+
+  revoke: (tokenId: string) =>
+    request<void>("DELETE", `/tokens/${encodeURIComponent(tokenId)}`),
+
+  /** where MCP clients connect, absolute for pasting into their config */
+  mcpUrl: () =>
+    new URL(`${getBoardsApiBase()}/mcp`, window.location.origin).href,
+};

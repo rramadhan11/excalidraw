@@ -33,6 +33,7 @@ func UserFrom(ctx context.Context) (User, bool) {
 type Handler struct {
 	users        *Users
 	sessions     *Sessions
+	tokens       *Tokens
 	accountLimit *Limiter
 	ipLimit      *Limiter
 	cookieSecure bool
@@ -45,10 +46,11 @@ type HandlerConfig struct {
 	TrustProxy   bool
 }
 
-func NewHandler(users *Users, sessions *Sessions, cfg HandlerConfig, logger *slog.Logger) *Handler {
+func NewHandler(users *Users, sessions *Sessions, tokens *Tokens, cfg HandlerConfig, logger *slog.Logger) *Handler {
 	return &Handler{
 		users:        users,
 		sessions:     sessions,
+		tokens:       tokens,
 		accountLimit: NewLimiter(maxFailuresPerAccount, loginWindow),
 		ipLimit:      NewLimiter(maxFailuresPerIP, loginWindow),
 		cookieSecure: cfg.CookieSecure,

@@ -343,11 +343,15 @@ func tokenCommand(args []string) error {
 			t := time.Now().AddDate(0, 0, *expiresDays)
 			expiresAt = &t
 		}
-		token, raw, err := tokens.Create(ctx, *email, *name, expiresAt)
+		user, err := auth.NewUsers(pool).GetByEmail(ctx, *email)
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(os.Stderr, "created token %q (%s) for %s; it is shown only once:\n", token.Name, token.ID, auth.NormalizeEmail(*email))
+		token, raw, err := tokens.Create(ctx, user.ID, *name, expiresAt)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "created token %q (%s) for %s; it is shown only once:\n", token.Name, token.ID, user.Email)
 		fmt.Println(raw)
 		return nil
 
@@ -355,7 +359,11 @@ func tokenCommand(args []string) error {
 		if *email == "" {
 			return errors.New("--email is required")
 		}
-		list, err := tokens.List(ctx, *email)
+		user, err := auth.NewUsers(pool).GetByEmail(ctx, *email)
+		if err != nil {
+			return err
+		}
+		list, err := tokens.List(ctx, user.ID)
 		if err != nil {
 			return err
 		}
@@ -371,7 +379,7 @@ func tokenCommand(args []string) error {
 		if *id == "" {
 			return errors.New("--id is required")
 		}
-		if err := tokens.Revoke(ctx, *id); err != nil {
+		if err := tokens.RevokeAny(ctx, *id); err != nil {
 			return err
 		}
 		fmt.Println("token revoked")

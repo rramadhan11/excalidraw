@@ -32,11 +32,20 @@ func (b bearer) RoundTrip(r *http.Request) (*http.Response, error) {
 // token issues an API token for an existing user.
 func (e *env) token(email string, expiresAt *time.Time) string {
 	e.t.Helper()
-	_, raw, err := auth.NewTokens(e.pool).Create(context.Background(), email, "test client", expiresAt)
+	_, raw, err := auth.NewTokens(e.pool).Create(context.Background(), e.userID(email), "test client", expiresAt)
 	if err != nil {
 		e.t.Fatal(err)
 	}
 	return raw
+}
+
+func (e *env) userID(email string) string {
+	e.t.Helper()
+	user, err := auth.NewUsers(e.pool).GetByEmail(context.Background(), email)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	return user.ID
 }
 
 // mcpSession connects a real MCP client to /api/mcp with the token.
@@ -175,18 +184,18 @@ func TestMCPAuthentication(t *testing.T) {
 	expect(t, "expired token", mcpPost(e, http.Header{"Authorization": {"Bearer " + expired}}), 401)
 
 	tokens := auth.NewTokens(e.pool)
-	list, err := tokens.List(context.Background(), "alice@example.com")
+	list, err := tokens.List(context.Background(), e.userID("alice@example.com"))
 	if err != nil || len(list) != 2 {
 		t.Fatalf("list = %v, %v", list, err)
 	}
-	if err := tokens.Revoke(context.Background(), list[0].ID); err != nil {
+	if err := tokens.RevokeAny(context.Background(), list[0].ID); err != nil {
 		t.Fatal(err)
 	}
 	expect(t, "revoked token", mcpPost(e, http.Header{"Authorization": {"Bearer " + valid}}), 401)
-	if err := tokens.Revoke(context.Background(), "not-a-uuid"); err == nil {
+	if err := tokens.RevokeAny(context.Background(), "not-a-uuid"); err == nil {
 		t.Error("revoking an unknown token should fail")
 	}
-	if _, _, err := tokens.Create(context.Background(), "nobody@example.com", "x", nil); err == nil {
+	if _, _, err := tokens.Create(context.Background(), "00000000-0000-0000-0000-000000000000", "x", nil); err == nil {
 		t.Error("creating a token for an unknown user should fail")
 	}
 }

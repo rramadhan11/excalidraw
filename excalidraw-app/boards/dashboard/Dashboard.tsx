@@ -1,5 +1,6 @@
 import {
   loginIcon,
+  MagicIcon,
   PenModeIcon,
 } from "@excalidraw/excalidraw/components/icons";
 import { useCallback, useEffect, useState } from "react";
@@ -12,6 +13,7 @@ import { authStateAtom, dashboardNoticeAtom } from "../state";
 
 import { BoardCard } from "./BoardCard";
 import { CollectionsNav } from "./CollectionsNav";
+import { ConnectAIDialog } from "./ConnectAIDialog";
 import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
 
 import "./dashboard.scss";
@@ -37,6 +39,7 @@ export const Dashboard = ({
   const { editorTheme } = useHandleAppTheme();
   const [notice, setNotice] = useAtom(dashboardNoticeAtom);
   const [error, setError] = useState("");
+  const [connectAIOpen, setConnectAIOpen] = useState(false);
 
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [collections, setCollections] = useState<Collection[] | null>(null);
@@ -202,6 +205,15 @@ export const Dashboard = ({
           <button
             type="button"
             className="boards-dashboard__icon-button"
+            onClick={() => setConnectAIOpen(true)}
+            title="Connect AI tools"
+            aria-label="Connect AI tools"
+          >
+            {MagicIcon}
+          </button>
+          <button
+            type="button"
+            className="boards-dashboard__icon-button"
             onClick={logout}
             title="Log out"
             aria-label="Log out"
@@ -283,6 +295,10 @@ export const Dashboard = ({
           </>
         )}
       </main>
+
+      {connectAIOpen && (
+        <ConnectAIDialog onClose={() => setConnectAIOpen(false)} />
+      )}
     </div>
   );
 };

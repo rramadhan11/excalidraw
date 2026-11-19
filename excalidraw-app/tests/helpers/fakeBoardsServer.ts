@@ -37,6 +37,16 @@ export class FakeBoardsServer {
   thumbnailPuts: { boardId: string; type: string }[] = [];
   thumbnailDeletes: string[] = [];
   conflictOnNextSave = false;
+  tokens: {
+    id: string;
+    name: string;
+    createdAt: string;
+    lastUsedAt: string | null;
+    expiresAt: string | null;
+    revokedAt: string | null;
+  }[] = [];
+  /** the password the token endpoint accepts */
+  password = "correct horse";
 
   constructor() {
     this.workspaces.set(WORKSPACE_ID, {
@@ -246,6 +256,40 @@ export class FakeBoardsServer {
         boards: page.map((b) => this.summary(b)),
         nextCursor: offset + limit < list.length ? String(offset + limit) : "",
       });
+    }
+
+    // API tokens
+    if (path === "/tokens" && method === "GET") {
+      return json(200, { tokens: this.tokens });
+    }
+    if (path === "/tokens" && method === "POST") {
+      if (body.password !== this.password) {
+        return json(403, {
+          error: { code: "invalid_password", message: "wrong password" },
+        });
+      }
+      const days = body.expiresInDays;
+      const token = {
+        id: newId("dddddddd"),
+        name: body.name.trim(),
+        createdAt: new Date().toISOString(),
+        lastUsedAt: null,
+        expiresAt:
+          days === null
+            ? null
+            : new Date(Date.now() + days * 86_400_000).toISOString(),
+        revokedAt: null,
+      };
+      this.tokens.push(token);
+      return json(201, { token, secret: `exa_secret-${token.id}` });
+    }
+    if ((m = path.match(/^\/tokens\/([^/]+)$/)) && method === "DELETE") {
+      const token = this.tokens.find((t) => t.id === m![1]);
+      if (!token) {
+        return notFound();
+      }
+      token.revokedAt ??= new Date().toISOString();
+      return json(204);
     }
 
     // a single board

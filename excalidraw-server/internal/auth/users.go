@@ -163,6 +163,19 @@ func (u *Users) SetPassword(ctx context.Context, email, password string) error {
 	})
 }
 
+// GetByEmail returns ErrUserNotFound for an unknown email.
+func (u *Users) GetByEmail(ctx context.Context, email string) (User, error) {
+	var user User
+	err := u.pool.QueryRow(ctx,
+		`SELECT id, email, name, created_at FROM users WHERE email = $1`,
+		NormalizeEmail(email),
+	).Scan(&user.ID, &user.Email, &user.Name, &user.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return User{}, ErrUserNotFound
+	}
+	return user, err
+}
+
 func (u *Users) List(ctx context.Context) ([]User, error) {
 	rows, err := u.pool.Query(ctx, `SELECT id, email, name, created_at FROM users ORDER BY created_at`)
 	if err != nil {

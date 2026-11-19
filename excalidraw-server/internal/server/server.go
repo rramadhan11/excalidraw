@@ -28,9 +28,11 @@ type Config struct {
 }
 
 func NewHandler(pool *pgxpool.Pool, cfg Config, logger *slog.Logger) http.Handler {
+	tokens := auth.NewTokens(pool)
 	authHandler := auth.NewHandler(
 		auth.NewUsers(pool),
 		auth.NewSessions(pool),
+		tokens,
 		auth.HandlerConfig{CookieSecure: cfg.CookieSecure, TrustProxy: cfg.TrustProxy},
 		logger,
 	)
@@ -55,6 +57,7 @@ func NewHandler(pool *pgxpool.Pool, cfg Config, logger *slog.Logger) http.Handle
 	mux.HandleFunc("POST /api/auth/login", authHandler.Login)
 	mux.HandleFunc("POST /api/auth/logout", authHandler.Logout)
 	mux.Handle("GET /api/auth/me", authHandler.RequireUser(http.HandlerFunc(authHandler.Me)))
+	authHandler.RegisterTokens(mux)
 	workspacesHandler.Register(mux, authHandler.RequireUser)
 	collectionsHandler.Register(mux, authHandler.RequireUser)
 	boardsHandler.Register(mux, authHandler.RequireUser)
@@ -64,7 +67,7 @@ func NewHandler(pool *pgxpool.Pool, cfg Config, logger *slog.Logger) http.Handle
 	// cookie-authenticated API needs.
 	root := http.NewServeMux()
 	root.Handle("/api/mcp", mcpserver.Handler(mcpserver.Deps{
-		Tokens:      auth.NewTokens(pool),
+		Tokens:      tokens,
 		Workspaces:  workspaceStore,
 		Collections: collectionStore,
 		Boards:      boardStore,

@@ -134,9 +134,39 @@ Catatan:
 
 ## 6. MCP: akses dari AI tools (Claude Code, Codex, dll.)
 
-Endpoint-nya `https://draw.gemps.my.id/api/mcp`, dan aksesnya pakai **token pribadi** per user. Token punya akses penuh seperti user pemiliknya, jadi perlakukan seperti password.
+Endpoint-nya `https://draw.gemps.my.id/api/mcp`, dan aksesnya pakai **token pribadi** per user. Token punya akses penuh seperti user pemiliknya (semua workspace-nya), jadi perlakukan seperti password.
 
-Buat token **(di VPS)**. Token hanya ditampilkan sekali, jadi langsung simpan di password manager:
+### Buat token: dari web (cara utama, juga untuk teman)
+
+Setiap user membuat token sendiri. Admin cukup membuatkan akunnya (langkah 4, `user create`).
+
+1. Login di `https://draw.gemps.my.id`, lalu klik ikon **Connect AI tools** di bagian bawah sidebar (sebelah tombol logout).
+2. Isi nama token (misalnya `Claude Code laptop`), pilih masa berlaku, masukkan password, lalu klik **Create token**.
+3. Copy command yang muncul dan paste di terminal. Token hanya ditampilkan sekali.
+
+Di dialog yang sama ada daftar token, kapan terakhir dipakai, dan tombol **Revoke**. Setiap user maksimal punya 20 token aktif.
+
+### Buat token: dari terminal (curl)
+
+Password dibaca dengan `read -s` supaya tidak masuk shell history. Header `X-Requested-With: excalidraw` wajib dikirim (proteksi CSRF).
+
+```bash
+B=https://draw.gemps.my.id; EMAIL=kamu@example.com
+read -s "PW?Password: "; echo        # bash: read -s -p "Password: " PW; echo
+H=(-H 'X-Requested-With: excalidraw' -H 'Content-Type: application/json')
+JAR=$(mktemp)
+curl -fsS -c "$JAR" "${H[@]}" $B/api/auth/login \
+  -d "$(jq -n --arg e "$EMAIL" --arg p "$PW" '{email:$e,password:$p}')" >/dev/null
+curl -fsS -b "$JAR" "${H[@]}" $B/api/tokens \
+  -d "$(jq -n --arg p "$PW" '{name:"terminal",expiresInDays:90,password:$p}')" | jq -r .secret
+rm -f "$JAR"; unset PW
+```
+
+`expiresInDays` boleh `30`, `90` (default kalau tidak diisi), `365`, atau `null` (tidak pernah expired). Untuk melihat dan me-revoke token: `GET /api/tokens` dan `DELETE /api/tokens/<id>`, dengan cookie login yang sama.
+
+### Buat token: admin di VPS (CLI)
+
+Untuk akun mana pun, tanpa password user. `token revoke` dari CLI bisa me-revoke token milik siapa saja.
 
 ```bash
 cd ~/excalidraw/deploy
